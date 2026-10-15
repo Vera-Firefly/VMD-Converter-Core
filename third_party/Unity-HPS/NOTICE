@@ -1,0 +1,10 @@
+Unity-HPS
+Copyright 2026 VeraFirefly
+
+Unity-HPS is licensed under the Apache License, Version 2.0.
+
+This distribution includes ufbx by Samuli Raivio.
+Copyright (c) 2020 Samuli Raivio.
+ufbx is distributed under the MIT alternative of its upstream license.
+The full third-party license is provided in third_party/ufbx/LICENSE in
+source distributions and ufbx-LICENSE.txt in binary distributions.

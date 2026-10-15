@@ -1,0 +1,6 @@
+{
+  "name": "VmdccTargetFkExample",
+  "references": ["com.verafirefly.vmdcc", "com.verafirefly.vmdcc.editor"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

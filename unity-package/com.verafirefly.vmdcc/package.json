@@ -1,0 +1,9 @@
+{
+  "name": "com.verafirefly.vmdcc",
+  "displayName": "VMD Converter Core",
+  "version": "0.1.0",
+  "unity": "2022.3",
+  "license": "Apache-2.0",
+  "description": "VRC-independent external PMX/VMD and IK worker with optional standalone Humanoid Root/Muscle DLL solvers, target-Avatar FK, and a public Unity clip importer. Does not convert PMX to FBX.",
+  "author": { "name": "VeraFirefly" }
+}

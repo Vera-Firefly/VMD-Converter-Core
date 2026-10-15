@@ -1,0 +1,8 @@
+.vs/
+bin/
+obj/
+*.vccpose
+*.partial
+/artifacts/
+
+third_party/Unity-HPS/native/win-x64/

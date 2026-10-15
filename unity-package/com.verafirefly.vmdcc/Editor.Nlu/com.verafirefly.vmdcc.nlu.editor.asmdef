@@ -1,0 +1,14 @@
+{
+  "name": "com.verafirefly.vmdcc.nlu.editor",
+  "rootNamespace": "VeraFirefly.VmdConverter.Core.Editor.Nlu",
+  "references": ["com.verafirefly.vmdcc", "com.verafirefly.vmdcc.editor"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

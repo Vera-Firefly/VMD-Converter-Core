@@ -21,7 +21,7 @@ VMDCC 是 Windows x64 PMX/VMD 转换程序及 Unity 接入包，负责 PMX 骨�
 
 | `--output-kind` | 目标求解范围 |
 |---|---|
-| `humanoid-ik` | 无目标时使用 PMX；有明确目标时对整身目标姿态拟合 |
+| `humanoid-ik` | PMX 源 IK 求解；明确目标 rig 时整体重定向，不隐式启用目标肢体重解 |
 | `target-humanoid`、`target-fk` | 正常模式：目标根运动、躯干、下肢，保留源 Humanoid 上肢 |
 | `target-humanoid-leg`、`target-fk-leg` | 显式采用正常／下肢策略 |
 | `target-humanoid-arm`、`target-fk-arm` | 目标上肢；保留源 Humanoid 躯干和下肢 |

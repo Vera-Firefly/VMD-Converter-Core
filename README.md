@@ -21,7 +21,7 @@ The third command uses the PMX Humanoid rig. Any supplied `--fbx`, `--hps-rig` o
 
 | `--output-kind` | Target fitting |
 |---|---|
-| `humanoid-ik` | PMX Humanoid without a target; full-pose target fitting when a target is explicit |
+| `humanoid-ik` | PMX source IK; an explicit rig retargets the whole Humanoid pose without target limb reconstruction |
 | `target-humanoid`, `target-fk` | Normal policy: target root/body/legs, source Humanoid upper limb |
 | `target-humanoid-leg`, `target-fk-leg` | Explicit normal/leg policy |
 | `target-humanoid-arm`, `target-fk-arm` | Target upper limb; source Humanoid body/legs |

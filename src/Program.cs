@@ -447,7 +447,7 @@ internal static class Program
           --hps-rig file         Explicit HPS rig; mutually exclusive with --fbx
           --descriptor file      Saved FBX descriptor (or matching --fbx)
                                 Explicit targets always participate; invalid targets fail.
-                                humanoid-ik without a target uses PMX; with a target fits the full pose.
+                                humanoid-ik uses PMX source IK; an explicit rig retargets the whole pose without target limb reconstruction.
                                 All target-* modes require a target.
           --meta file            Override FBX importer metadata
           --bone-map file        Human-bone to FBX node mapping JSON

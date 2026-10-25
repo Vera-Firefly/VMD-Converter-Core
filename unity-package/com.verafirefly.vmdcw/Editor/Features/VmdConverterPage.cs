@@ -328,32 +328,12 @@ internal sealed class VmdConverterPage : ConverterFeaturePage
 
     private void DrawMotionOutputTypeSettings()
     {
-        EditorGUI.BeginChangeCheck();
-        MotionOutputType next = (MotionOutputType)EditorGUILayout.Popup(
-            L("输出类型", "Output Type", "出力タイプ"),
-            (int)motionOutputType,
-            new[]
-            {
-                "Humanoid",
-                L("目标校准 Humanoid", "Target-calibrated Humanoid", "対象校正Humanoid"),
-                L("目标 Avatar FK", "Target Avatar FK", "対象 Avatar FK")
-            });
-        if (EditorGUI.EndChangeCheck())
+        if (DrawMotionOutputChoicePopup())
         {
-            motionOutputType = next;
             DestroyTransientMotionData();
             convertedMotionResourcesDirty = true;
-            if (RequiresTargetAvatarOutput ||
-                modelParserMethod == VmdMotionConverter.ModelParserMethod.VmdConverterCore)
-            {
+            if (RequiresTargetAvatarOutput || modelParserMethod == VmdMotionConverter.ModelParserMethod.VmdConverterCore)
                 motionConversionScheme = VmdMotionConversionScheme.DirectExport;
-            }
-        }
-        if (RequiresTargetAvatarOutput)
-        {
-            var scope = (PmxTargetSolveScope)EditorGUILayout.EnumPopup(
-                L("目标求解范围", "Target solve scope", "対象の解決範囲"), targetSolveScope);
-            if (scope != targetSolveScope) { targetSolveScope = scope; DestroyTransientMotionData(); convertedMotionResourcesDirty = true; }
         }
         if (modelParserMethod == VmdMotionConverter.ModelParserMethod.VmdConverterCore)
         {
@@ -362,9 +342,9 @@ internal sealed class VmdConverterPage : ConverterFeaturePage
         if (IsTargetFk)
         {
             EditorGUILayout.HelpBox(
-                L("输出绑定到当前 Avatar 骨架的 Transform/FK 曲线。上肢经规范 Humanoid 姿态在目标 Avatar 上解码，以避免骨轴扭转错误。需要有效的 Humanoid Animator。",
-                    "Writes Transform/FK curves for the selected Avatar. Upper limbs are decoded from the canonical Humanoid pose on the target Avatar to avoid arm-axis twist errors. A valid Humanoid Animator is required.",
-                    "対象 Avatar の Transform/FK カーブを出力します。腕は骨軸のねじれを避けるため標準 Humanoid 姿勢から復元します。有効な Humanoid Animator が必要です。"),
+                L("输出绑定到当前 Avatar 的 Transform/FK 曲线。Normal/Leg 保留源 Humanoid 上肢，All/Arm 启用目标上肢重解。需要有效的 Humanoid Animator。",
+                    "Writes Transform/FK curves for the selected Avatar. Normal/Leg retain source Humanoid arms; All/Arm reconstruct target upper limbs. A valid Humanoid Animator is required.",
+                    "対象 Avatar の Transform/FK カーブを出力します。Normal/Leg はソースの腕を維持し、All/Arm は対象上肢を再解決します。有効な Humanoid Animator が必要です。"),
                 MessageType.Info);
             return;
         }
@@ -1085,11 +1065,7 @@ internal sealed class VmdConverterPage : ConverterFeaturePage
 
     private VmdExternalOutputKind GetCoreOutputKind()
     {
-        if (!RequiresTargetAvatarOutput) return VmdExternalOutputKind.HumanoidIk;
-        string kind = IsTargetFk ? "target-fk" : "target-humanoid";
-        if (targetSolveScope != PmxTargetSolveScope.Normal)
-            kind += "-" + targetSolveScope.ToString().ToLowerInvariant();
-        return VmdOutputModes.Parse(kind);
+        return VmdOutputModes.Parse(MotionOutputArgument);
     }
 
 

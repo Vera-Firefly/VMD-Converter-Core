@@ -1,7 +1,7 @@
 {
-  "VmdConverterCore.exe": "62107dd372db937cc0219e247e8088e844beb4a24b96ec2f32de724dfa480fad",
-  "VmdConverterCore.Shared.dll": "148ec97a6a86e7bdc584909820a0f8c782b41278236c898303829d397009a5bc",
-  "VmdConverterCore.Hps.dll": "1f544940d6b02e2fb37fc36dc8ebd7c4de3f76923b9172c5e5fbda8052ea896a",
-  "UnityHps.Core.dll": "642952824dc7dedb556af117bad472de14afe0b0f14dbabe1edf8aeec5b43bb3",
-  "UnityHps.Fbx.dll": "e5d894a2917086bb5c6392a5c9a4ac892f1db78399e0dc8732fbd14453394e8b"
+  "VmdConverterCore.exe": "1b7ee94042034598a86a0247734c3e0196c20442507bbf6b0c4df8b95d61c230",
+  "VmdConverterCore.Shared.dll": "6faf891e8a4eaccb8743cc8d2e4d97b415480f361edac523d3b848f932b1598d",
+  "VmdConverterCore.Hps.dll": "036d5ea473749ec418d8d679559fce1e8c8d6f855d2fee91d5f61a386b0d5165",
+  "UnityHps.Core.dll": "7eb557bf128ab6c134e5dcfa1f4a3cc8ef9d65f807cfd0035f2789b4c639ac4a",
+  "UnityHps.Fbx.dll": "7416d954d048a40c0673faaa6f68c6510c04c53d3e15c6ea2650fb2034c22550"
 }

@@ -29,6 +29,39 @@ internal enum MotionOutputType
     TargetFk
 }
 
+internal readonly struct MotionOutputChoice
+{
+    internal readonly MotionOutputType Type;
+    internal readonly PmxTargetSolveScope Scope;
+    internal readonly string Argument;
+    internal MotionOutputChoice(MotionOutputType type, PmxTargetSolveScope scope, string argument)
+    { Type = type; Scope = scope; Argument = argument; }
+}
+
+internal static class MotionOutputChoices
+{
+    internal static readonly MotionOutputChoice[] Values =
+    {
+        new MotionOutputChoice(MotionOutputType.Humanoid, PmxTargetSolveScope.Normal, "humanoid-ik"),
+        new MotionOutputChoice(MotionOutputType.TargetCalibratedHumanoid, PmxTargetSolveScope.Normal, "target-humanoid"),
+        new MotionOutputChoice(MotionOutputType.TargetCalibratedHumanoid, PmxTargetSolveScope.All, "target-humanoid-all"),
+        new MotionOutputChoice(MotionOutputType.TargetCalibratedHumanoid, PmxTargetSolveScope.Arm, "target-humanoid-arm"),
+        new MotionOutputChoice(MotionOutputType.TargetCalibratedHumanoid, PmxTargetSolveScope.Leg, "target-humanoid-leg"),
+        new MotionOutputChoice(MotionOutputType.TargetFk, PmxTargetSolveScope.Normal, "target-fk"),
+        new MotionOutputChoice(MotionOutputType.TargetFk, PmxTargetSolveScope.All, "target-fk-all"),
+        new MotionOutputChoice(MotionOutputType.TargetFk, PmxTargetSolveScope.Arm, "target-fk-arm"),
+        new MotionOutputChoice(MotionOutputType.TargetFk, PmxTargetSolveScope.Leg, "target-fk-leg")
+    };
+
+    internal static int IndexOf(MotionOutputType type, PmxTargetSolveScope scope)
+    {
+        int index = Array.FindIndex(Values, c => c.Type == type &&
+            (type == MotionOutputType.Humanoid || c.Scope == scope));
+        if (index < 0) index = Array.FindIndex(Values, c => c.Type == type && c.Scope == PmxTargetSolveScope.Normal);
+        return Math.Max(0, index);
+    }
+}
+
 internal enum MotionStorageLocation
 {
     FollowSource,
@@ -218,11 +251,46 @@ internal abstract class ConverterFeaturePage
         set => Context.TargetPreview = value;
     }
     protected PmxTargetSolveScope targetSolveScope { get => Context.TargetSolveScope; set => Context.TargetSolveScope = value; }
-    protected bool SolveTargetUpper => targetSolveScope == PmxTargetSolveScope.All || targetSolveScope == PmxTargetSolveScope.Arm || (targetSolveScope == PmxTargetSolveScope.Normal && targetUpperLimbInverseSolve);
+    protected bool SolveTargetUpper => targetSolveScope == PmxTargetSolveScope.All || targetSolveScope == PmxTargetSolveScope.Arm;
     protected bool IsTargetCalibratedHumanoid =>
         motionOutputType == MotionOutputType.TargetCalibratedHumanoid;
     protected bool IsTargetFk => motionOutputType == MotionOutputType.TargetFk;
     protected bool RequiresTargetAvatarOutput => IsTargetCalibratedHumanoid || IsTargetFk;
+
+    protected int MotionOutputChoiceIndex
+    {
+        get => MotionOutputChoices.IndexOf(motionOutputType, targetSolveScope);
+        set
+        {
+            var choice = MotionOutputChoices.Values[Mathf.Clamp(value, 0, MotionOutputChoices.Values.Length - 1)];
+            motionOutputType = choice.Type;
+            targetSolveScope = choice.Scope;
+        }
+    }
+    protected string MotionOutputArgument => MotionOutputChoices.Values[MotionOutputChoiceIndex].Argument;
+
+    protected string[] GetMotionOutputChoiceLabels()
+    {
+        return MotionOutputChoices.Values.Select(choice =>
+        {
+            string label = choice.Type == MotionOutputType.Humanoid ? "Humanoid IK" :
+                choice.Type == MotionOutputType.TargetFk ? L("目标 Avatar FK", "Target Avatar FK", "対象 Avatar FK") :
+                L("目标校准 Humanoid", "Target-calibrated Humanoid", "対象校正 Humanoid");
+            if (choice.Scope == PmxTargetSolveScope.All) label += L("／全身", " / Whole body", "／全身");
+            else if (choice.Scope == PmxTargetSolveScope.Arm) label += L("／上肢", " / Arms", "／上肢");
+            else if (choice.Scope == PmxTargetSolveScope.Leg) label += L("／下肢", " / Legs", "／下半身");
+            return label + " (" + choice.Argument + ")";
+        }).ToArray();
+    }
+
+    protected bool DrawMotionOutputChoicePopup()
+    {
+        int current = MotionOutputChoiceIndex;
+        int next = EditorGUILayout.Popup(L("输出类型", "Output Type", "出力タイプ"), current, GetMotionOutputChoiceLabels());
+        if (next == current) return false;
+        MotionOutputChoiceIndex = next;
+        return true;
+    }
 
     internal virtual void Attach(ConverterWindowContext context)
     {

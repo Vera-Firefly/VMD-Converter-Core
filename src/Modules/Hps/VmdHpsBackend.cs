@@ -61,7 +61,8 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
             else if(options.FbxPath!=null)rig=OfflineRigFactory.FromFbx(options.FbxPath,new FbxImportOptions{MetaPath=options.MetaPath,BoneMapPath=options.BoneMapPath},options.ProfilePath);
             else if(legacy!=null)rig=FromLegacy(legacy);
             else rig=sourceRig;
-            if (!canonical && region == VmdTargetSolveRegion.Canonical) region = VmdTargetSolveRegion.All;
+            // An explicit rig retargets the complete source Humanoid pose.
+            // Target limb reconstruction remains exclusive to target-* modes.
             nativeCalibration=HasNativeCompensation(rig);
             if(!canonical && (rig.precision.Contains("profile",StringComparison.Ordinal) ||
                 rig.precision.EndsWith("-unproven",StringComparison.Ordinal)))
@@ -105,7 +106,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 outputKind=options.OutputKind,bakeMorphs=options.BakeMorphs,
                 humanoid=new VmdHumanoidCalibrationData{muscles=rig.muscles.Select(m=>new VmdMuscleCalibration{property=MuscleProperty(m.name)}).ToArray()},
                 morphs=legacy?.morphs??rig.morphs.Select(m=>new VmdTargetMorphBinding{name=m.name,path=m.path}).ToArray()};
-            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|"+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
+            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|source-retarget-v2|"+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
         }
 
         Rig RawSourceBind()

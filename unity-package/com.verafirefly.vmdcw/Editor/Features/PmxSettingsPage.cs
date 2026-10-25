@@ -114,24 +114,7 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
         debugVmdAsset = (DefaultAsset)EditorGUILayout.ObjectField(
             L("VMD文件", "VMD File", "VMDファイル"),
             debugVmdAsset, typeof(DefaultAsset), false);
-        MotionOutputType[] modes =
-        {
-            MotionOutputType.Humanoid,
-            MotionOutputType.TargetCalibratedHumanoid,
-            MotionOutputType.TargetFk
-        };
-        int modeIndex = Array.IndexOf(modes, motionOutputType);
-        modeIndex = EditorGUILayout.Popup(L("输出类型", "Output", "出力タイプ"),
-            Mathf.Max(0, modeIndex), new[]
-            {
-                "Humanoid IK",
-                L("目标校准 Humanoid", "Target-calibrated Humanoid", "対象校正 Humanoid"),
-                L("目标 Avatar FK", "Target Avatar FK", "対象 Avatar FK")
-            });
-        motionOutputType = modes[Mathf.Clamp(modeIndex, 0, modes.Length - 1)];
-        if (RequiresTargetAvatarOutput)
-            targetSolveScope = (PmxTargetSolveScope)EditorGUILayout.EnumPopup(
-                L("目标求解范围", "Target solve scope", "対象の解決範囲"), targetSolveScope);
+        DrawMotionOutputChoicePopup();
         debugSkeletonRoot = (GameObject)EditorGUILayout.ObjectField(
             L("目标 Humanoid 模型根", "Target Humanoid Root", "対象 Humanoid ルート"),
             debugSkeletonRoot, typeof(GameObject), true);
@@ -161,9 +144,9 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
                 if (!string.IsNullOrEmpty(selected)) coreHpsRigPath = selected;
             }
             EditorGUILayout.HelpBox(L(
-                "提供 HPS rig 时优先使用它；否则从目标模型查找 FBX。Humanoid IK 有目标 rig 时将 PMX 整身姿态经目标 rig 解码和拟合；没有目标 rig 时使用 PMX rig。目标校准 Humanoid 也在目标 rig 上解码整身姿态并拟合根运动与下半身，上半身保留 PMX 源肌肉值。目标校准 Humanoid 和目标 FK 必须有 FBX 或 HPS rig。",
-                "An HPS rig takes priority; otherwise the target model's FBX is used. With an explicit target rig, Humanoid IK decodes and fits the complete PMX pose on that rig; without one, it uses the PMX rig. Target Humanoid decodes the full pose on the target rig, fits root and lower body there, and retains PMX upper-body muscles. Target Humanoid and FK require FBX or HPS rig.",
-                "HPS rig を優先し、なければ対象モデルの FBX を使用します。Humanoid IK は対象 rig があれば PMX の全身姿勢を対象 rig でデコード・フィットし、なければ PMX rig を使用します。対象 Humanoid も対象 rig で全身姿勢をデコードし、ルートと下半身をフィットします。上半身の筋肉カーブは PMX ソースの値を維持します。対象 Humanoid / FK には FBX または HPS rig が必要です。"), MessageType.Info);
+                "提供 HPS rig 时优先使用它；否则从目标模型查找 FBX。Humanoid IK 先在 PMX 上完成源 IK，再将整身 Humanoid 姿态重定向到目标 rig，不隐式启用目标肢体重解；没有目标 rig 时使用 PMX rig。目标校准 Humanoid 的普通/下肢模式校准根运动、躯干和下肢，上肢保留源肌肉值；全身模式重解全身，上肢模式只重解目标上肢。目标校准 Humanoid 和目标 FK 必须有 FBX 或 HPS rig。",
+                "An HPS rig takes priority; otherwise the target model's FBX is used. Humanoid IK solves source IK on the PMX, then retargets the complete Humanoid pose to an explicit rig without target limb reconstruction; without a target, it uses the PMX rig. Normal/Leg target Humanoid fits root, body and legs while retaining source upper muscles; All reconstructs the whole target pose and Arm reconstructs only target upper limbs. Target Humanoid and FK require FBX or HPS rig.",
+                "HPS rig を優先し、なければ対象モデルの FBX を使用します。Humanoid IK は PMX のソース IK を解き、対象 rig があれば全身 Humanoid 姿勢をリターゲットします。対象の四肢の再解決は暗黙に有効化しません。対象がなければ PMX rig を使用します。対象 Humanoid の Normal/Leg はルート・胴体・脚を校正し、腕のソース筋肉を維持します。All は全身、Arm は対象上肢のみを再解決します。対象 Humanoid / FK には FBX または HPS rig が必要です。"), MessageType.Info);
         }
         if (!coreFullyManaged)
             EditorGUILayout.HelpBox(L(
@@ -213,10 +196,7 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
 
     private VmdExternalOutputKind GetCoreOutputKind()
     {
-        if (!RequiresTargetAvatarOutput) return VmdExternalOutputKind.HumanoidIk;
-        string kind = IsTargetFk ? "target-fk" : "target-humanoid";
-        if (targetSolveScope != PmxTargetSolveScope.Normal) kind += "-" + targetSolveScope.ToString().ToLowerInvariant();
-        return VmdOutputModes.Parse(kind);
+        return VmdOutputModes.Parse(MotionOutputArgument);
     }
 
     private PmxAnimationClipBakerOptions CreateCoreBakeOptions() =>
@@ -327,6 +307,37 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
     }
 #endif
 
+    private int GetDebugOutputChoiceIndex()
+    {
+        if (debugOutput == BuiltInDebugOutput.GenericTransform) return MotionOutputChoices.Values.Length;
+        if (debugOutput == BuiltInDebugOutput.TargetModelLowerBodyFkFidelity) return MotionOutputChoices.Values.Length + 1;
+        var type = debugOutput == BuiltInDebugOutput.Humanoid ? MotionOutputType.Humanoid :
+            debugOutput == BuiltInDebugOutput.TargetModelFkFidelity ? MotionOutputType.TargetFk : MotionOutputType.TargetCalibratedHumanoid;
+        return MotionOutputChoices.IndexOf(type, targetSolveScope);
+    }
+
+    private void SetDebugOutputChoiceIndex(int index)
+    {
+        if (index >= MotionOutputChoices.Values.Length)
+        {
+            debugOutput = index == MotionOutputChoices.Values.Length ? BuiltInDebugOutput.GenericTransform : BuiltInDebugOutput.TargetModelLowerBodyFkFidelity;
+            targetSolveScope = PmxTargetSolveScope.Normal;
+            return;
+        }
+        var choice = MotionOutputChoices.Values[Mathf.Clamp(index, 0, MotionOutputChoices.Values.Length - 1)];
+        debugOutput = choice.Type == MotionOutputType.Humanoid ? BuiltInDebugOutput.Humanoid :
+            choice.Type == MotionOutputType.TargetFk ? BuiltInDebugOutput.TargetModelFkFidelity : BuiltInDebugOutput.TargetCalibratedHumanoid;
+        targetSolveScope = choice.Scope;
+    }
+
+    private PmxDebugTargetFkBakeOptions CreateBuiltInDebugFkOptions()
+    {
+        var options = Debug_CreateFkBakeOptions();
+        if (debugOutput == BuiltInDebugOutput.TargetModelLowerBodyFkFidelity)
+            options.UpperLimbInverseSolve = targetUpperLimbInverseSolve;
+        return options;
+    }
+
     private void Debug_DrawBuiltInSettings()
     {
         ConverterWindowGui.DrawSectionTitle(L("内置解析方案调试", "Built-in Parser Debug", "内蔵解析方式のデバッグ"));
@@ -341,39 +352,20 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
             typeof(DefaultAsset),
             false);
 
-        BuiltInDebugOutput[] outputValues =
+        string[] outputLabels = GetMotionOutputChoiceLabels().Concat(new[]
         {
-            BuiltInDebugOutput.Humanoid,
-            BuiltInDebugOutput.GenericTransform,
-            BuiltInDebugOutput.TargetModelFkFidelity,
-            BuiltInDebugOutput.TargetModelLowerBodyFkFidelity,
-            BuiltInDebugOutput.TargetCalibratedHumanoid
-        };
-        string[] outputLabels =
-        {
-            "Humanoid",
-            L("通用骨骼", "Generic Transform", "汎用ボーン"),
-            L("目标模型 FK 保真模式", "Target-model FK Fidelity", "対象モデルFK忠実モード"),
-            L("目标模型 FK 保真模式 (下肢)", "Target-model FK Fidelity (Lower Body)", "対象モデル FK 忠実モード（下半身）"),
-            L("目标校准 Humanoid", "Target-calibrated Humanoid", "対象校正Humanoid")
-        };
-        int outputIndex = Array.IndexOf(outputValues, debugOutput);
-        if (outputIndex < 0) outputIndex = 0;
-        outputIndex = EditorGUILayout.Popup(
-            L("输出类型", "Output", "出力タイプ"),
-            outputIndex,
-            outputLabels);
-        debugOutput = outputValues[Mathf.Clamp(outputIndex, 0, outputValues.Length - 1)];
-        if (debugOutput == BuiltInDebugOutput.TargetModelFkFidelity ||
-            debugOutput == BuiltInDebugOutput.TargetCalibratedHumanoid)
-            targetSolveScope = (PmxTargetSolveScope)EditorGUILayout.EnumPopup(
-                L("目标求解范围", "Target solve scope", "対象の解決範囲"), targetSolveScope);
+            L("通用 PMX 骨骼", "Generic PMX Transform", "汎用 PMX ボーン"),
+            L("下肢 FK + 其余 Humanoid", "Lower-body FK + Humanoid remainder", "下半身 FK + 残り Humanoid")
+        }).ToArray();
+        int outputIndex = EditorGUILayout.Popup(
+            L("输出类型", "Output", "出力タイプ"), GetDebugOutputChoiceIndex(), outputLabels);
+        if (outputIndex != GetDebugOutputChoiceIndex()) SetDebugOutputChoiceIndex(outputIndex);
         if (debugOutput == BuiltInDebugOutput.TargetModelFkFidelity)
         {
             EditorGUILayout.HelpBox(
-                L("躯干和下肢保留目标骨架逐骨 FK；上肢默认由规范 Humanoid 姿态在目标 Avatar 上解码，再写为 Transform 曲线，以避免 PMX 与目标骨轴不一致导致的扭转错误。",
-                    "Torso and legs keep per-bone target FK. Upper limbs are decoded from the canonical Humanoid pose on the target Avatar and written as Transform curves to avoid arm-axis twist errors.",
-                    "胴体と脚は対象骨格の FK を維持します。腕は PMX と対象骨軸の差によるねじれを避けるため、標準 Humanoid 姿勢を対象 Avatar で復元して Transform カーブに書きます。"),
+                L("按所选输出类型写入目标骨架 FK。Normal/Leg 保留源 Humanoid 上肢；All/Arm 启用目标上肢重解。",
+                    "Writes target FK for the selected output. Normal/Leg retain source Humanoid arms; All/Arm reconstruct target upper limbs.",
+                    "選択した出力タイプで対象 FK を書き出します。Normal/Leg はソースの腕を維持し、All/Arm は対象上肢を再解決します。"),
                 MessageType.Info);
         }
         if (debugOutput == BuiltInDebugOutput.TargetModelLowerBodyFkFidelity)
@@ -430,21 +422,27 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
         debugBakeMorphs = EditorGUILayout.Toggle(
             L("烘焙同名形态键", "Bake Same-name Morphs", "同名モーフをベイク"),
             debugBakeMorphs);
-        targetUpperLimbInverseSolve = EditorGUILayout.Toggle(
-            new GUIContent(
-                L("目标上肢反解", "Target Upper-limb Inverse Solve", "対象上肢の逆解析"),
-                L("影响目标校准 Humanoid 与目标模型 FK 保真。启用后，上肢执行目标 FK 重建并由 HumanPose 反解；默认关闭。",
-                    "Affects target-calibrated Humanoid and target-model FK fidelity. Reconstructs target upper-limb FK and inverse-solves it through HumanPose; disabled by default.",
-                    "対象校正 Humanoid と対象モデル FK 保持に適用します。対象上肢 FK を再構築して HumanPose から逆解析します。既定では無効です。")),
-            targetUpperLimbInverseSolve);
-        if (targetUpperLimbInverseSolve)
+        if (debugOutput == BuiltInDebugOutput.TargetModelLowerBodyFkFidelity)
         {
-            EditorGUILayout.HelpBox(
-                L("调试模式：会为每个采样帧增加上肢 HumanPose 往返求解，因此转换更慢；极端扭转仍可能发生分支翻转。",
-                    "Debug mode: adds an upper-limb HumanPose round trip per sample and is slower; extreme twists may still flip branches.",
-                    "デバッグモード：各サンプルで上肢 HumanPose の往復解析を追加するため遅くなります。極端なツイストでは分岐反転が残る場合があります。"),
-                MessageType.Warning);
+            targetUpperLimbInverseSolve = EditorGUILayout.Toggle(
+                new GUIContent(
+                    L("目标上肢反解", "Target Upper-limb Inverse Solve", "対象上肢の逆解析"),
+                    L("影响目标校准 Humanoid 与目标模型 FK 保真。启用后，上肢执行目标 FK 重建并由 HumanPose 反解；默认关闭。",
+                        "Affects target-calibrated Humanoid and target-model FK fidelity. Reconstructs target upper-limb FK and inverse-solves it through HumanPose; disabled by default.",
+                        "対象校正 Humanoid と対象モデル FK 保持に適用します。対象上肢 FK を再構築して HumanPose から逆解析します。既定では無効です。")),
+                targetUpperLimbInverseSolve);
+            if (targetUpperLimbInverseSolve)
+            {
+                EditorGUILayout.HelpBox(
+                    L("调试模式：会为每个采样帧增加上肢 HumanPose 往返求解，因此转换更慢；极端扭转仍可能发生分支翻转。",
+                        "Debug mode: adds an upper-limb HumanPose round trip per sample and is slower; extreme twists may still flip branches.",
+                        "デバッグモード：各サンプルで上肢 HumanPose の往復解析を追加するため遅くなります。極端なツイストでは分岐反転が残る場合があります。"),
+                    MessageType.Warning);
+            }
         }
+        else if (debugOutput == BuiltInDebugOutput.TargetModelFkFidelity || debugOutput == BuiltInDebugOutput.TargetCalibratedHumanoid)
+            EditorGUILayout.LabelField(L("目标上肢反解", "Target upper-limb reconstruction", "対象上肢の再解決"),
+                SolveTargetUpper ? L("开启（由输出类型决定）", "Enabled by output type", "出力タイプで有効") : L("关闭（由输出类型决定）", "Disabled by output type", "出力タイプで無効"));
         curveReductionError = EditorGUILayout.Slider(
             new GUIContent(
                 "Curve Error",
@@ -600,7 +598,7 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
                     debugSkeletonRoot,
                     outputPath,
                     options,
-                    Debug_CreateFkBakeOptions(),
+                    CreateBuiltInDebugFkOptions(),
                     progress);
             }
             else if (debugOutput == BuiltInDebugOutput.TargetModelLowerBodyFkFidelity)
@@ -611,7 +609,7 @@ internal sealed class PmxSettingsPage : ConverterFeaturePage
                     debugSkeletonRoot,
                     outputPath,
                     options,
-                    Debug_CreateFkBakeOptions(),
+                    CreateBuiltInDebugFkOptions(),
                     progress);
             }
             else

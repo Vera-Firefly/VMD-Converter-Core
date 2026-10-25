@@ -21,7 +21,14 @@ HPS_EXPORT void *hps_fbx_load(const void *data, size_t size, char *message, size
     ufbx_load_opts opts = {0};
     opts.ignore_geometry = true;
     opts.ignore_animation = true;
-    opts.target_axes = ufbx_axes_left_handed_y_up;
+    // Unity's imported model frame uses the opposite forward/right pair to
+    // ufbx_axes_left_handed_y_up. Keep descendants' authored local axes while
+    // matching the model-root conversion used by the Unity FBX importer.
+    opts.target_axes = (ufbx_coordinate_axes) {
+        UFBX_COORDINATE_AXIS_NEGATIVE_X,
+        UFBX_COORDINATE_AXIS_POSITIVE_Y,
+        UFBX_COORDINATE_AXIS_POSITIVE_Z,
+    };
     opts.target_unit_meters = 1.0;
     // Bake coordinate/units conversion into node transforms. Keeping the
     // default synthetic root reflection would look like a negative Avatar

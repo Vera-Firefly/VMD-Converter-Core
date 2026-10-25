@@ -13,15 +13,12 @@
     <Compile Include="src/Executable/VmdAnimYamlWriter.cs" />
     <Compile Include="src/Executable/HpsBackendLoader.cs" />
     <Compile Include="src/Executable/PoseMemoryBudget.cs" />
-    <Compile Include="src/Core/VmdHumanoidCurveSolver.cs" />
     <ProjectReference Include="src/Core/VmdConverterCore.Shared.csproj" />
-    <ProjectReference Include="src/Modules/RootMotion/VmdConverterCore.RootMotion.csproj" />
-    <ProjectReference Include="src/Modules/Muscles/VmdConverterCore.Muscles.csproj" />
   </ItemGroup>
-  <Target Name="KeepNluModulesBesideExecutable" BeforeTargets="_ComputeFilesToBundle">
+  <Target Name="KeepContractBesideExecutable" BeforeTargets="_ComputeFilesToBundle">
     <ItemGroup>
       <ResolvedFileToPublish Update="@(ResolvedFileToPublish)"
-        Condition="'%(ResolvedFileToPublish.Filename)' == 'VmdConverterCore.RootMotion' Or '%(ResolvedFileToPublish.Filename)' == 'VmdConverterCore.Muscles' Or '%(ResolvedFileToPublish.Filename)' == 'VmdConverterCore.Shared'">
+        Condition="'%(ResolvedFileToPublish.Filename)' == 'VmdConverterCore.Shared'">
         <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
       </ResolvedFileToPublish>
     </ItemGroup>

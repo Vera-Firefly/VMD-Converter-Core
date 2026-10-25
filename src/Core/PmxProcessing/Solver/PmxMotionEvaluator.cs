@@ -12,8 +12,18 @@ namespace VeraFirefly.VmdConverter.Core
         public bool EnableBoneMorphs = true;
         public bool ApplyFixedAxes = true;
         public bool ApplyLocalAxes;
+        /// <summary>Local-axis conjugation direction: false = basis * r * inverse(basis),
+        /// true = inverse(basis) * r * basis (the other candidate reading of PMX local axes).</summary>
+        public bool LocalAxesInverted;
         public bool EvaluateAfterPhysicsBones = true;
         public bool UseIncrementalWorldUpdates = true;
+        /// <summary>Append order: false = grant * own (current), true = own * grant (MMD candidate).</summary>
+        public bool AppendPostMultiply;
+        /// <summary>Force the local (or global) append path instead of the PMX flag, -1 = flag.</summary>
+        public int ForceLocalAppend = -1;
+        /// <summary>Non-local grants inherit the source's world-space delta (the MMD reading of
+        /// 付与) instead of its local rotation.</summary>
+        public bool AppendWorldDelta;
         public int MaximumIkIterations = 256;
         public float IkTolerance = 0.00001f;
         public VmdInterpolationOwner InterpolationOwner = VmdInterpolationOwner.DestinationKey;
@@ -124,8 +134,16 @@ namespace VeraFirefly.VmdConverter.Core
                 if (_options.ApplyLocalAxes && bone.HasFlag(PmxBoneFlags.LocalAxes))
                 {
                     Quaternion basis = Quaternion.LookRotation(bone.LocalAxisZ, bone.LocalAxisY);
-                    rotation = basis * rotation * Quaternion.Inverse(basis);
-                    translation = basis * translation;
+                    if (_options.LocalAxesInverted)
+                    {
+                        rotation = Quaternion.Inverse(basis) * rotation * basis;
+                        translation = Quaternion.Inverse(basis) * translation;
+                    }
+                    else
+                    {
+                        rotation = basis * rotation * Quaternion.Inverse(basis);
+                        translation = basis * translation;
+                    }
                 }
 
                 if (_options.ApplyFixedAxes && bone.HasFlag(PmxBoneFlags.FixedAxis))
@@ -196,7 +214,9 @@ namespace VeraFirefly.VmdConverter.Core
             if (sourceIndex < 0 || sourceIndex >= _model.Bones.Count || Mathf.Abs(bone.InheritWeight) < 1e-7f)
                 return false;
 
-            bool local = bone.HasFlag(PmxBoneFlags.LocalAppend);
+            bool local = _options.ForceLocalAppend < 0
+                ? bone.HasFlag(PmxBoneFlags.LocalAppend)
+                : _options.ForceLocalAppend != 0;
             Quaternion inheritedRotation;
             Vector3 inheritedTranslation;
             if (local)
@@ -213,7 +233,17 @@ namespace VeraFirefly.VmdConverter.Core
                 // its absolute world orientation. Using a world quaternion here
                 // also imports the source parent chain and breaks cancellation
                 // helpers such as shoulder P/C and the arm-twist grants.
-                inheritedRotation = pose.LocalRotations[sourceIndex];
+                if (_options.AppendWorldDelta)
+                {
+                    // PMX bones have no rest rotation, so the source's absolute world rotation is
+                    // its deformation. Express it in this bone's parent frame.
+                    inheritedRotation = NormalizeSafe(Quaternion.Inverse(parentWorld) *
+                        pose.WorldRotations[sourceIndex] * parentWorld);
+                }
+                else
+                {
+                    inheritedRotation = pose.LocalRotations[sourceIndex];
+                }
                 Vector3 worldDisplacement = pose.WorldPositions[sourceIndex] - _model.Bones[sourceIndex].Position;
                 inheritedTranslation = Quaternion.Inverse(parentWorld) * worldDisplacement;
             }
@@ -228,7 +258,9 @@ namespace VeraFirefly.VmdConverter.Core
             {
                 Quaternion grant = Quaternion.SlerpUnclamped(
                     Quaternion.identity, inheritedRotation, bone.InheritWeight);
-                pose.LocalRotations[boneIndex] = NormalizeSafe(grant * pose.LocalRotations[boneIndex]);
+                pose.LocalRotations[boneIndex] = _options.AppendPostMultiply
+                    ? NormalizeSafe(pose.LocalRotations[boneIndex] * grant)
+                    : NormalizeSafe(grant * pose.LocalRotations[boneIndex]);
                 if (_options.ApplyFixedAxes && bone.HasFlag(PmxBoneFlags.FixedAxis))
                     pose.LocalRotations[boneIndex] = ProjectToAxis(pose.LocalRotations[boneIndex], bone.FixedAxis);
                 applied = true;

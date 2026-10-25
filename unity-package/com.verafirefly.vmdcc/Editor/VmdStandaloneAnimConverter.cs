@@ -16,7 +16,9 @@ namespace VeraFirefly.VmdConverter.Core.Editor
         public float SampleRate = 30, PositionScale = 0.08f, CurveError = 0.00001f;
         public float RotationErrorDegrees = 0.01f, PositionError = 0.00005f;
         public int CoordinateConversion = 2, Threads;
-        public bool BakeMorphs = true;
+        public bool BakeMorphs = true, FkContinuity = true;
+        public int Passes = 3;
+        public string RangePolicy = "tangent", LegFit = "auto";
     }
 
     public sealed class VmdStandaloneAnimJob
@@ -94,7 +96,17 @@ namespace VeraFirefly.VmdConverter.Core.Editor
             if (o == null) throw new ArgumentNullException(nameof(o));
             if (float.IsNaN(o.SampleRate) || float.IsInfinity(o.SampleRate) || o.SampleRate <= 0 || o.SampleRate > 240 || o.Threads < 0 || o.Threads > 256)
                 throw new ArgumentException("Invalid sample rate or threads.");
-            string kind = o.OutputKind == VmdExternalOutputKind.HumanoidIk ? "humanoid-ik" : o.OutputKind == VmdExternalOutputKind.TargetFk ? "target-fk" : "target-humanoid";
+            bool hasFbx = !string.IsNullOrWhiteSpace(o.FbxPath);
+            bool hasHpsRig = !string.IsNullOrWhiteSpace(o.HpsRigPath);
+            if (hasFbx && hasHpsRig)
+                throw new ArgumentException("Choose either an FBX or an HPS rig for standalone conversion.");
+            if (o.OutputKind != VmdExternalOutputKind.HumanoidIk && !hasFbx && !hasHpsRig)
+                throw new ArgumentException("Target Humanoid/FK output requires an FBX or HPS rig. Select a target model with a source FBX, or set HPS rig JSON in PMX settings.");
+            if (hasFbx && !File.Exists(o.FbxPath)) throw new FileNotFoundException("Target FBX not found.", o.FbxPath);
+            if (hasHpsRig && !File.Exists(o.HpsRigPath)) throw new FileNotFoundException("HPS rig not found.", o.HpsRigPath);
+            string kind = VmdOutputModes.ToArgument(o.OutputKind);
+            if (o.RangePolicy != "strict" && o.RangePolicy != "tangent" || o.LegFit != "auto" && o.LegFit != "rotation" && o.LegFit != "geometry" || o.Passes < 1 || o.Passes > 20)
+                throw new ArgumentException("Invalid HPS fitting options.");
             return "--anim-w --pmx " + Quote(Path.GetFullPath(o.PmxPath)) + " --output-kind " + kind +
                 " --sample-rate " + o.SampleRate.ToString(CultureInfo.InvariantCulture) +
                 " --threads " + (o.Threads > 0 ? o.Threads : Math.Max(1, Environment.ProcessorCount - 1)) +
@@ -103,6 +115,8 @@ namespace VeraFirefly.VmdConverter.Core.Editor
                 " --rotation-error " + o.RotationErrorDegrees.ToString(CultureInfo.InvariantCulture) +
                 " --position-error " + o.PositionError.ToString(CultureInfo.InvariantCulture) +
                 " --bake-morphs " + (o.BakeMorphs ? "true" : "false") +
+                " --passes " + o.Passes + " --range-policy " + o.RangePolicy + " --leg-fit " + o.LegFit +
+                " --fk-continuity " + (o.FkContinuity ? "true" : "false") +
                 (string.IsNullOrEmpty(o.FbxPath) ? "" : " --fbx " + Quote(Path.GetFullPath(o.FbxPath))) +
                 (string.IsNullOrEmpty(o.HpsRigPath) ? "" : " --hps-rig " + Quote(Path.GetFullPath(o.HpsRigPath)));
         }

@@ -1,42 +1,35 @@
-# VMD Converter Core Unity 集成包
+# VMD Converter Core
 
-[English](README.md) | 简体中文
+VMDCC 提供外部 PMX/VMD、IK 预处理和 HPS 动画转换，不依赖 VMDCW、VRCSDK，不提供 PMX 模型转 FBX。
 
-本包提供外部 VMD Converter Core 的公开 Unity Editor 调用接口，支持 PMX/VMD 动作转换、Humanoid IK、目标校准 Humanoid、目标骨架 FK 及形态键映射，无需安装 VMDCW 或 VRCSDK。
+## 调用
 
-## 安装
+Editor 程序集引用 `com.verafirefly.vmdcc` 与 `com.verafirefly.vmdcc.editor`。命名空间为 `VeraFirefly.VmdConverter.Core`、`.Editor`。
 
-在 Windows x64 的 Unity 2022.3 工程中安装为本地包。外部程序及其 DLL 位于 `Tools/`，在独立进程中运行；.NET 10 DLL 的 Unity 插件加载已禁用。
-
-## Editor 调用
-
-在自己的 Editor 程序集定义中引用 `com.verafirefly.vmdcc` 和 `com.verafirefly.vmdcc.editor`。直接调用 NLU 接口时另需引用 `com.verafirefly.vmdcc.nlu.editor`。
+- `VmdExternalPoseWorker.PrepareBatch`：不传目标 rig 时生成原始 PMX/IK 姿态供 Unity 原生烘焙；无需 HPS。
+- `VmdStandaloneAnimConverter.ConvertBatch`／`BuildCommandLine`：通过 EXE＋HPS 离线生成 `.anim`，返回后由调用者导入。
+- `VmdTargetRigExporter.ExportJson`：导出旧版静态绑定，用于 `--rig`／`.vcccurves`。
+- `UnityHps.Reference.UnityHpsCalibration.Export`：在 Unity 主线程生成含原生 Avatar 响应的 HPS `rig.json`，用于 `--hps-rig`。
+- `VmdConverterCore.PrepareBatch`／`ReadCurves`：HPS 曲线文件接口。
 
 ```csharp
-using VeraFirefly.VmdConverter.Core;
-using VeraFirefly.VmdConverter.Core.Editor;
-
 var options = new VmdStandaloneAnimOptions {
-    ExecutablePath = exePath,
-    PmxPath = pmxPath,
-    FbxPath = VmdSourceFbxUtility.FindSourceFbx(targetGameObject),
-    OutputKind = VmdExternalOutputKind.TargetCalibratedHumanoid,
-    Threads = 8
+    ExecutablePath = executable, PmxPath = pmx, FbxPath = fbx,
+    OutputKind = VmdExternalOutputKind.TargetFkAll
 };
-var jobs = new[] {
-    new VmdStandaloneAnimJob { VmdPath = vmdPath, OutputPath = physicalAnimPath }
-};
-VmdStandaloneAnimConverter.ConvertBatch(options, jobs);
+VmdStandaloneAnimConverter.ConvertBatch(options, new[] {
+    new VmdStandaloneAnimJob { VmdPath = vmd, OutputPath = anim }
+});
 ```
 
-转换使用绝对文件路径。输出位于 Assets 下时，由调用方通过 `AssetDatabase.ImportAsset` 导入。`BuildCommandLine(options, job)` 返回单行控制台命令，`WriteMorphMap` 写出形态键映射；逐任务设置 `MorphMapPath` 与 `ExpressionVmdPath`。未映射形态键使用 `Body` 路径。
+## 模式与运行文件
 
-该接口传入 `--anim-w`。离线 rig 生成需要 `VmdConverterCore.Hps.dll`、`UnityHps.Core.dll`，读取 FBX 另需 `UnityHps.Fbx.dll`。仅有 `--anim-w` 时查找 HPS；缺少 HPS 时，直接输出 `.anim` 需要 VMDCC 格式的 `--rig`。
+支持 `humanoid-ik`、`target-humanoid`、`target-fk` 及两种 target 输出的 `-all`／`-arm`／`-leg`。普通 target 采用下肢策略；all 整身目标拟合，arm 仅目标上肢拟合，输出仍为完整动作。
 
-## 曲线缓存调用
+离线曲线必须有 HPS。保留 Tools 中 EXE、Shared、Hps、UnityHps.Core、UnityHps.Fbx 共五个二进制及其禁用 Unity 插件加载的 `.meta`。EXE 接受 `--help`。明确填写 FBX 或 HPS rig 时不得回退；全部 target 模式必须有目标。旧 `--rig` 与 HPS `--hps-rig` 是不同协议。
 
-使用 `VmdTargetRigExporter.Export/ExportJson/AttachCanonical/WriteJson` 导出目标 rig，通过 `VmdConverterCore.PrepareBatch` 提交任务，以 `ReadCurves` 读取曲线，再由 Unity Editor API 创建动画。`VmdNluBatchPipeline.PrepareBatch` 提供独立的 Humanoid RootMotion/Muscles 处理。
+Unity 场景、Avatar、HumanPoseHandler、AnimationClip、AssetDatabase 操作必须在 Editor 主线程。VMDCW 默认通过原始姿态接入 Unity API；全部托管选项才由 HPS 离线求曲线。
 
-HPS rig 使用 `--hps-rig`，Unity 导出的 VMDCC rig 使用 `--rig`。场景修改不会自动反映到源 FBX，应使用与目标 Humanoid 配置相匹配的校准数据。
+完整参数、引用示例及构建说明见 [项目文档](https://github.com/Vera-Firefly/VMD-Converter-Core/blob/main/README.zh-CN.md)。
 
-完整参数见[命令行指南](Documentation/OFFLINE.md)，二进制文件要求见 [Tools 说明](Tools/README.md)。本包使用 [Apache-2.0](LICENSE)。
+`HpsCalibrationExporter.ExportBatch` 另可导出 Transform 模式 `--calibrate` 的 Unity 测量轴；该格式不是 HPS rig JSON。

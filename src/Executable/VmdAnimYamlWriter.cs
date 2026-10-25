@@ -26,6 +26,10 @@ internal static class VmdAnimYamlWriter
             throw new ArgumentNullException("Animation output requires stream, curves and rig.");
         if (data.Curves.Count == 0)
             throw new InvalidDataException("No animation curves to write.");
+        var duplicate = data.Curves.GroupBy(curve => (curve.BindingKind, curve.Path, curve.Property))
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate != null)
+            throw new InvalidDataException("Duplicate animation curve binding: " + duplicate.Key);
         foreach (VmdFloatCurveData curve in data.Curves)
             ValidateCurve(curve);
 
@@ -35,6 +39,7 @@ internal static class VmdAnimYamlWriter
             "m_LocalPosition.", "xyz");
         var bindings = new List<Binding>();
         var seen = new HashSet<Binding>();
+        var bindingSources = new Dictionary<Binding, (string path, string property)>();
         // Compiled binding order follows the serialized curve sections.
         IEnumerable<VmdFloatCurveData> compiledOrder =
             rotations.Select(group => group.Components[0])
@@ -43,6 +48,10 @@ internal static class VmdAnimYamlWriter
         foreach (VmdFloatCurveData curve in compiledOrder)
         {
             Binding binding = GetBinding(curve, rig);
+            var source = (curve.Path ?? string.Empty, curve.Property);
+            if (bindingSources.TryGetValue(binding, out var previous) && previous != source)
+                throw new InvalidDataException("Animation binding hash collision: " + previous + " and " + source);
+            bindingSources[binding] = source;
             if (seen.Add(binding)) bindings.Add(binding);
         }
 

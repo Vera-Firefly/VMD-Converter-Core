@@ -8,19 +8,41 @@ namespace UnityHps;
 /// Nonlinear quaternion lattice interpolation replaces signed-axis log addition.
 /// Calibration is read-only and shared across workers; fitting state is per frame.
 /// </summary>
-public sealed class HumanoidSolver
+public sealed partial class HumanoidSolver
 {
     private readonly Rig rig;
+    /// <summary>Fit arm geometry in the decoded shoulder/torso context instead of assuming the target parent was fitted. Configure before sharing.</summary>
+    public bool FitDecodedArmContext { get; init; }
+    /// <summary>Fit leg joint directions and foot orientation instead of every local rotation. Opt in after validating the rig's forward responses.</summary>
+    public bool FitLegGeometry { get; init; }
+    /// <summary>Use the initial limb twist as a soft prior while fitting joint geometry.</summary>
+    public bool AnchorLimbTwistToInitial { get; init; }
+    public HumanoidRangePolicy RangePolicy { get; }
+    private long extrapolatedGroups;
+    public long ExtrapolatedGroupEvaluations => Interlocked.Read(ref extrapolatedGroups);
     private readonly SkeletonPose neutral;
     private readonly Dictionary<MuscleGroup, float[]> negativeRanges = new();
+    private readonly float[] muscleLimits;
     private readonly bool[] reverseComposition;
     private readonly MuscleGroup[][] components;
+    private readonly MuscleGroup[][] componentsBodyFirst;
     private readonly Dictionary<MuscleGroup, int[]> rotationBones = new();
     private readonly Dictionary<MuscleGroup, (Quaternion[] rotations, Vector3[] positions)> latticeCache = new();
-    public HumanoidSolver(Rig rig)
+    private readonly IReadOnlySet<int>? activeHumanBones;
+    public HumanoidSolver(Rig rig, IReadOnlySet<int>? activeHumanBones = null,
+        HumanoidRangePolicy rangePolicy = HumanoidRangePolicy.Strict)
     {
         Validate(rig);
+        if (!Enum.IsDefined(rangePolicy)) throw new ArgumentOutOfRangeException(nameof(rangePolicy));
+        RangePolicy = rangePolicy;
         this.rig = rig;
+        this.activeHumanBones = activeHumanBones;
+        muscleLimits = Enumerable.Repeat(rangePolicy == HumanoidRangePolicy.Tangent ? 4f : 1f, rig.muscles.Length).ToArray();
+        foreach (var group in rig.groups)
+            for (int d = 0; d < group.muscles.Length; d++)
+                muscleLimits[group.muscles[d]] = rangePolicy == HumanoidRangePolicy.Tangent
+                    ? Math.Max(4f, group.muscleRanges.Length == 0 ? 1f : group.muscleRanges[d])
+                    : group.muscleRanges.Length == 0 ? 1f : group.muscleRanges[d];
         neutral = new SkeletonPose(rig);
         reverseComposition = Enumerable.Range(0, rig.bones.Length).Select(rig.reverseCompositionBones.Contains).ToArray();
         foreach (var group in rig.groups)
@@ -58,7 +80,8 @@ public sealed class HumanoidSolver
             rotationBones.Add(group, group.bones.Where(b => b != rig.hips && rig.bones[b].parent >= 0 &&
                 group.samples.Any(s => Math3.Angle(Math3.Q(rig.bones[b].rotation), Math3.Q(s.rotations, Array.IndexOf(group.bones, b) * 4)) > 0.001f)).ToArray());
         }
-        var remaining = new HashSet<MuscleGroup>(rig.groups);
+        var remaining = new HashSet<MuscleGroup>(rig.groups.Where(group =>
+            activeHumanBones == null || group.muscles.Any(m => activeHumanBones.Contains(rig.muscles[m].humanBone))));
         var blocks = new List<MuscleGroup[]>();
         while (remaining.Count > 0)
         {
@@ -73,6 +96,8 @@ public sealed class HumanoidSolver
             blocks.Add(rig.groups.Where(block.Contains).ToArray());
         }
         components = blocks.ToArray();
+        componentsBodyFirst = components.OrderBy(block => block.Any(group => group.muscles.Any(m =>
+            rig.muscles[m].humanBone is >= 13 and <= 18)) ? 1 : 0).ToArray();
     }
 
     public static void Validate(Rig rig)
@@ -99,19 +124,28 @@ public sealed class HumanoidSolver
                 group.muscles.Any(m => m < 0 || m >= rig.muscles.Length) ||
                 group.bones.Distinct().Count() != group.bones.Length ||
                 group.bones.Any(b => b < 0 || b >= rig.bones.Length) ||
+                group.muscleRanges.Length != 0 && group.muscleRanges.Length != n ||
+                group.muscleRanges.Any(v => !float.IsFinite(v) || v <= 0) ||
                 group.samples.Length != (int)Math.Pow(size, n))
                 throw new InvalidDataException("Invalid muscle lattice.");
             foreach (var sample in group.samples)
+            {
                 if (sample.positions.Length != group.bones.Length * 3 || sample.rotations.Length != group.bones.Length * 4)
                     throw new InvalidDataException("Invalid lattice sample shape.");
+                if (sample.positions.Any(v => !float.IsFinite(v)) ||
+                    sample.rotations.Any(v => !float.IsFinite(v)) ||
+                    sample.muscles.Any(v => !float.IsFinite(v)))
+                    throw new InvalidDataException("Non-finite calibration lattice sample.");
+            }
         }
     }
 
-    /// <summary>Evaluate the calibrated neutral-body pose for muscle values in [-1,1].</summary>
+    /// <summary>Evaluate the calibrated neutral-body pose within the sampled muscle ranges.</summary>
     public SkeletonPose Decode(float[] muscles, HumanPose? root = null)
     {
-        if (muscles.Length != rig.muscles.Length || muscles.Any(m => !float.IsFinite(m) || m < -1 || m > 1))
-            throw new InvalidDataException("Muscles must match the rig and lie within calibrated [-1,1].");
+        if (muscles.Length != rig.muscles.Length ||
+            muscles.Where((m, i) => !float.IsFinite(m) || Math.Abs(m) > muscleLimits[i]).Any())
+            throw new InvalidDataException("Muscles must match the rig and lie within the selected evaluation ranges.");
         var pose = new SkeletonPose(rig);
         foreach (var group in rig.groups)
         {
@@ -153,60 +187,89 @@ public sealed class HumanoidSolver
         return pose;
     }
 
-    public SolveResult Solve(PoseFrame frame, int passes = 2)
+    /// <summary>Copy a finite optimizer estimate into this solver's evaluation range. This does not modify the target pose or fitted output.</summary>
+    public float[] CreateFitSeed(float[] estimate)
+    {
+        if (estimate.Length != rig.muscles.Length || estimate.Any(v => !float.IsFinite(v)))
+            throw new InvalidDataException("Fit seed must be finite and match the rig muscle count.");
+        var result = new float[estimate.Length];
+        for (int i = 0; i < result.Length; i++)
+            result[i] = Math.Clamp(estimate[i], -muscleLimits[i], muscleLimits[i]);
+        return result;
+    }
+
+    public SolveResult Solve(PoseFrame frame, int passes = 2, float[]? initialMuscles = null)
     {
         if (!float.IsFinite(frame.time) || frame.time < 0) throw new InvalidDataException("Invalid frame time.");
         var desired = new SkeletonPose(rig, frame);
         float[] ikErrors = frame.goals.Select(g => TwoBoneIk.Solve(desired, g)).ToArray();
-        var muscles = new float[rig.muscles.Length];
+        if (initialMuscles != null)
+        {
+            if (initialMuscles.Length != rig.muscles.Length)
+                throw new InvalidDataException($"Initial muscle count {initialMuscles.Length} differs from rig count {rig.muscles.Length}.");
+            for (int i = 0; i < initialMuscles.Length; i++)
+                if (!float.IsFinite(initialMuscles[i]) || Math.Abs(initialMuscles[i]) > muscleLimits[i])
+                    throw new InvalidDataException($"Initial muscle {i} ({rig.muscles[i].name}) at {frame.time:G9}s is {initialMuscles[i]:G9}; " +
+                        $"allowed range is +/-{muscleLimits[i]:G9} under {RangePolicy} policy.");
+        }
+        var muscles = initialMuscles == null ? new float[rig.muscles.Length] : (float[])initialMuscles.Clone();
         // Coordinate LM over complete multi-axis quaternion responses. Cross-bone
         // twist distribution is included through each group's observed bones.
         for (int pass = 0; pass < passes; pass++)
-            foreach (var component in components)
-                FitGroup(desired, muscles, component);
-        SkeletonPose decoded = Decode(muscles);
-        Quaternion rootDelta = Quaternion.Normalize(desired.WorldRotations[rig.hips] *
-                                                    Quaternion.Inverse(decoded.WorldRotations[rig.hips]));
-        Quaternion bodyRotation = Quaternion.Normalize(rootDelta * Math3.Q(rig.bodyRotation));
-        if (rig.bodyOrientationMode == "landmarks")
-            bodyRotation = EstimateBodyRotation(desired);
-        Vector3 bodyPosition;
-        if (rig.bodyPositionWeights.Length != 0)
-        {
-            double x = 0, y = 0, z = 0;
-            for (int b = 0; b < rig.bones.Length; b++)
-            {
-                double weight = rig.bodyPositionWeights[b]; Vector3 p = desired.WorldPositions[b];
-                x += weight * p.X; y += weight * p.Y; z += weight * p.Z;
-            }
-            bodyPosition = new Vector3((float)(x / rig.humanScale), (float)(y / rig.humanScale), (float)(z / rig.humanScale));
-        }
-        else if (rig.bodyPositionJacobian.Length != 0)
-        {
-            // GetHumanPose's measured world-position response: do not use Hips
-            // local axes or assume RootT is simply Hips/humanScale.
-            double x = rig.bodyPosition[0], y = rig.bodyPosition[1], z = rig.bodyPosition[2];
-            for (int b = 0; b < rig.bones.Length; b++)
-            {
-                Vector3 d = desired.WorldPositions[b] - neutral.WorldPositions[b];
-                int o = b * 9; var j = rig.bodyPositionJacobian;
-                x += (double)j[o] * d.X + (double)j[o + 1] * d.Y + (double)j[o + 2] * d.Z;
-                y += (double)j[o + 3] * d.X + (double)j[o + 4] * d.Y + (double)j[o + 5] * d.Z;
-                z += (double)j[o + 6] * d.X + (double)j[o + 7] * d.Y + (double)j[o + 8] * d.Z;
-            }
-            bodyPosition = new Vector3((float)x, (float)y, (float)z);
-        }
+            foreach (var component in FitDecodedArmContext ? componentsBodyFirst : components)
+                FitComponent(desired, muscles, component);
+        SkeletonPose decoded = Decode(muscles, ReconstructDecodedRoot
+            ? new HumanPose { bodyPosition = rig.bodyPosition, bodyRotation = rig.bodyRotation }
+            : null);
+        HumanPose human;
+        if (ReconstructDecodedRoot)
+            human = ReconstructRoot(desired, muscles, decoded);
         else
         {
-            Vector3 center = Math3.V(rig.bodyPosition) * rig.humanScale;
-            bodyPosition = (desired.WorldPositions[rig.hips] -
-                Math3.Rotate(rootDelta, decoded.WorldPositions[rig.hips] - center)) / rig.humanScale;
+            Quaternion rootDelta = Quaternion.Normalize(desired.WorldRotations[rig.hips] *
+                                                        Quaternion.Inverse(decoded.WorldRotations[rig.hips]));
+            Quaternion bodyRotation = Quaternion.Normalize(rootDelta * Math3.Q(rig.bodyRotation));
+            if (rig.bodyOrientationMode == "landmarks")
+                bodyRotation = EstimateBodyRotation(desired);
+            Vector3 bodyPosition;
+            if (rig.bodyPositionWeights.Length != 0)
+            {
+                double x = 0, y = 0, z = 0;
+                for (int b = 0; b < rig.bones.Length; b++)
+                {
+                    double weight = rig.bodyPositionWeights[b]; Vector3 p = desired.WorldPositions[b];
+                    x += weight * p.X; y += weight * p.Y; z += weight * p.Z;
+                }
+                bodyPosition = new Vector3((float)(x / rig.humanScale), (float)(y / rig.humanScale), (float)(z / rig.humanScale));
+            }
+            else if (rig.bodyPositionJacobian.Length != 0)
+            {
+                // GetHumanPose's measured world-position response: do not use Hips
+                // local axes or assume RootT is simply Hips/humanScale.
+                double x = rig.bodyPosition[0], y = rig.bodyPosition[1], z = rig.bodyPosition[2];
+                for (int b = 0; b < rig.bones.Length; b++)
+                {
+                    Vector3 d = desired.WorldPositions[b] - neutral.WorldPositions[b];
+                    int o = b * 9; var j = rig.bodyPositionJacobian;
+                    x += (double)j[o] * d.X + (double)j[o + 1] * d.Y + (double)j[o + 2] * d.Z;
+                    y += (double)j[o + 3] * d.X + (double)j[o + 4] * d.Y + (double)j[o + 5] * d.Z;
+                    z += (double)j[o + 6] * d.X + (double)j[o + 7] * d.Y + (double)j[o + 8] * d.Z;
+                }
+                bodyPosition = new Vector3((float)x, (float)y, (float)z);
+            }
+            else
+            {
+                Vector3 center = Math3.V(rig.bodyPosition) * rig.humanScale;
+                bodyPosition = (desired.WorldPositions[rig.hips] -
+                    Math3.Rotate(rootDelta, decoded.WorldPositions[rig.hips] - center)) / rig.humanScale;
+            }
+            human = new HumanPose { bodyPosition = Math3.A(bodyPosition), bodyRotation = Math3.A(bodyRotation), muscles = muscles };
         }
-        var human = new HumanPose { bodyPosition = Math3.A(bodyPosition), bodyRotation = Math3.A(bodyRotation), muscles = muscles };
         float maxError = 0;
         for (int b = 0; b < rig.bones.Length; b++)
         {
-            if (b == rig.hips || rig.bones[b].humanBone < 0) continue;
+            if (b == rig.hips || rig.bones[b].humanBone < 0 ||
+                activeHumanBones != null && !activeHumanBones.Contains(rig.bones[b].humanBone)) continue;
             maxError = Math.Max(maxError, Math3.Angle(decoded.LocalRotations[b], desired.LocalRotations[b]));
         }
         PoseFrame solved = desired.ToFrame(frame.time);
@@ -214,17 +277,32 @@ public sealed class HumanoidSolver
             ikPositionErrors = ikErrors, positions = solved.positions, rotations = solved.rotations };
     }
 
-    public ResultBatch SolveBatch(PoseBatch input, int threads = 0, int passes = 2, TaskScheduler? scheduler = null)
+    /// <summary>Fit the selected muscle channels without decoding or computing RootT/RootQ.</summary>
+    public float[] SolveMuscles(PoseFrame frame, int passes = 2)
+    {
+        if (passes < 1 || passes > 20) throw new ArgumentOutOfRangeException(nameof(passes));
+        var desired = new SkeletonPose(rig, frame);
+        var muscles = new float[rig.muscles.Length];
+        for (int pass = 0; pass < passes; pass++)
+            foreach (var component in FitDecodedArmContext ? componentsBodyFirst : components)
+                FitComponent(desired, muscles, component);
+        return muscles;
+    }
+
+    public ResultBatch SolveBatch(PoseBatch input, int threads = 0, int passes = 2, TaskScheduler? scheduler = null,
+        float[][]? initialMuscles = null)
     {
         if (threads < 0 || passes < 1 || passes > 20) throw new ArgumentOutOfRangeException("Invalid threads/passes.");
         if (input.version != 1 || input.frames.Length == 0) throw new InvalidDataException("No input frames or unsupported schema.");
+        if (initialMuscles != null && initialMuscles.Length != input.frames.Length)
+            throw new InvalidDataException("Initial muscle frame count differs.");
         for (int i = 1; i < input.frames.Length; i++)
             if (input.frames[i].time < input.frames[i - 1].time) throw new InvalidDataException("Frame times must be sorted.");
         var watch = Stopwatch.StartNew();
         var output = new SolveResult[input.frames.Length];
         Parallel.For(0, output.Length, new ParallelOptions { MaxDegreeOfParallelism = threads == 0 ? Environment.ProcessorCount : threads,
                 TaskScheduler = scheduler ?? TaskScheduler.Default },
-            i => output[i] = Solve(input.frames[i], passes));
+            i => output[i] = Solve(input.frames[i], passes, initialMuscles?[i]));
         // Independent frame jobs preserve quaternion hemisphere continuity here.
         for (int i = 1; i < output.Length; i++)
             if (Quaternion.Dot(Math3.Q(output[i - 1].humanPose.bodyRotation), Math3.Q(output[i].humanPose.bodyRotation)) < 0)
@@ -255,13 +333,55 @@ public sealed class HumanoidSolver
         return report;
     }
 
-    private void FitGroup(SkeletonPose desired, float[] muscles, MuscleGroup[] block)
+    private void FitComponent(SkeletonPose desired, float[] muscles, MuscleGroup[] block)
+    {
+        int[] owners = block.Select(g => rig.muscles[g.muscles[0]].humanBone).Distinct().Order().ToArray();
+        bool arm = owners.SequenceEqual(new[] { 13, 15, 17 }) || owners.SequenceEqual(new[] { 14, 16, 18 });
+        bool leg = owners.SequenceEqual(new[] { 1, 3, 5 }) || owners.SequenceEqual(new[] { 2, 4, 6 });
+        FitGroup(desired, muscles, block, arm || FitLegGeometry && leg);
+    }
+
+    private void FitGroup(SkeletonPose desired, float[] muscles, MuscleGroup[] block, bool armGeometry = false)
     {
         int[] channels = block.SelectMany(g => g.muscles).Distinct().ToArray();
         int[] observed = block.SelectMany(g => rotationBones[g]).Distinct().ToArray();
         if (observed.Length == 0) return;
-        // Solve interacting twist channels simultaneously instead of cycling
-        // upper/lower limb groups toward one another for many passes.
+        int owner = rig.muscles[channels[0]].humanBone;
+        int first = owner is >= 1 and <= 6 ? 1 : 13;
+        int arm = Array.FindIndex(rig.bones, b => b.humanBone == (owner % 2 == 1 ? first : first + 1));
+        int elbow = arm < 0 ? -1 : Array.FindIndex(rig.bones, b => b.humanBone == rig.bones[arm].humanBone + 2);
+        int hand = arm < 0 ? -1 : Array.FindIndex(rig.bones, b => b.humanBone == rig.bones[arm].humanBone + 4);
+        armGeometry &= arm >= 0 && elbow >= 0 && hand >= 0;
+        if (armGeometry && ((desired.WorldPositions[elbow] - desired.WorldPositions[arm]).LengthSquared() < 1e-12f ||
+            (desired.WorldPositions[hand] - desired.WorldPositions[elbow]).LengthSquared() < 1e-12f)) armGeometry = false;
+        int[] twists = armGeometry ? channels.Where(m => rig.muscles[m].dof == 0).ToArray() : [];
+        float[] twistAnchor = twists.Select(m => AnchorLimbTwistToInitial ? muscles[m] : 0).ToArray();
+        float twistPenalty = 0;
+        if (armGeometry)
+        {
+            Vector3 upper = Vector3.Normalize(desired.WorldPositions[elbow] - desired.WorldPositions[arm]);
+            Vector3 lower = Vector3.Normalize(desired.WorldPositions[hand] - desired.WorldPositions[elbow]);
+            twistPenalty = 0.001f + 0.1f * Math.Clamp((0.25f - Vector3.Cross(upper, lower).Length()) / 0.25f, 0, 1);
+        }
+        Quaternion? decodedParentRotation = null;
+        if (FitDecodedArmContext && armGeometry && first == 13)
+        {
+            int chest = Array.FindIndex(rig.bones, b => b.humanBone == 8);
+            if (chest < 0) chest = Array.FindIndex(rig.bones, b => b.humanBone == 7);
+            int parent = rig.bones[arm].parent;
+            if (chest < 0 || parent < 0)
+                throw new InvalidDataException("Decoded arm fitting requires Chest or Spine and an arm parent.");
+            // Other components can retain fixed initial muscles. Use their
+            // actual decoded context, aligned at Chest so pending root fitting
+            // does not introduce an unrelated world rotation into this block.
+            var context = Decode(muscles);
+            decodedParentRotation = Quaternion.Normalize(desired.WorldRotations[chest] *
+                Quaternion.Inverse(context.WorldRotations[chest]) * context.WorldRotations[parent]);
+        }
+        // Arm muscle projection follows joint directions and the hand orientation.
+        // Matching every raw local rotation instead makes distributed MMD twist
+        // pull upstream channels to a limit. Near-collinear limbs need a small
+        // minimum-norm penalty because their bend plane does not determine roll.
         float[] Residual()
         {
             var predictions = observed.Select(b => neutral.LocalRotations[b]).ToArray();
@@ -277,6 +397,32 @@ public sealed class HumanoidSolver
                         : predictions[i] * delta;
                 }
             }
+            if (armGeometry)
+            {
+                var worldRotations = new Quaternion[rig.bones.Length];
+                var worldPositions = new Vector3[rig.bones.Length];
+                for (int b = 0; b < rig.bones.Length; b++)
+                {
+                    int slot = Array.IndexOf(observed, b), parent = rig.bones[b].parent;
+                    Quaternion local = slot < 0 ? neutral.LocalRotations[b] : predictions[slot];
+                    worldRotations[b] = parent < 0 ? local : Quaternion.Normalize(worldRotations[parent] * local);
+                    worldPositions[b] = parent < 0 ? neutral.LocalPositions[b] :
+                        worldPositions[parent] + Math3.Rotate(worldRotations[parent], neutral.LocalPositions[b]);
+                }
+                int anchor = rig.bones[arm].parent;
+                Quaternion alignment = anchor < 0 ? Quaternion.Identity :
+                    (decodedParentRotation ?? desired.WorldRotations[anchor]) * Quaternion.Inverse(worldRotations[anchor]);
+                var geometry = new float[9 + twists.Length];
+                Math3.Put(geometry, 0, Math3.Log(Math3.FromTo(
+                    Math3.Rotate(alignment, worldPositions[elbow] - worldPositions[arm]),
+                    desired.WorldPositions[elbow] - desired.WorldPositions[arm])));
+                Math3.Put(geometry, 3, Math3.Log(Math3.FromTo(
+                    Math3.Rotate(alignment, worldPositions[hand] - worldPositions[elbow]),
+                    desired.WorldPositions[hand] - desired.WorldPositions[elbow])));
+                Math3.Put(geometry, 6, Math3.Log(Quaternion.Inverse(alignment * worldRotations[hand]) * desired.WorldRotations[hand]));
+                for (int t = 0; t < twists.Length; t++) geometry[9 + t] = (muscles[twists[t]] - twistAnchor[t]) * twistPenalty;
+                return geometry;
+            }
             var result = new float[observed.Length * 3];
             for (int i = 0; i < observed.Length; i++)
             {
@@ -290,13 +436,16 @@ public sealed class HumanoidSolver
         for (int iteration = 0; iteration < 12; iteration++)
         {
             float[] residual = Residual();
+            if (armGeometry && residual.Take(9).Sum(v => (double)v * v) < 1e-12) break;
             double cost = residual.Sum(v => (double)v * v);
             if (cost < 1e-14) break;
             var jac = new float[dim][];
             for (int d = 0; d < dim; d++)
             {
-                int m = channels[d]; float original = muscles[m];
-                float shifted = original < 0.999f ? Math.Min(1, original + 0.001f) : Math.Max(-1, original - 0.001f);
+                int m = channels[d]; float original = muscles[m], limit = muscleLimits[m];
+                float shifted = original < limit - 0.001f
+                    ? Math.Min(limit, original + 0.001f)
+                    : Math.Max(-limit, original - 0.001f);
                 muscles[m] = shifted;
                 float[] shiftedResidual = Residual();
                 muscles[m] = original;
@@ -315,7 +464,11 @@ public sealed class HumanoidSolver
             }
             double[] step = SolveLinear(matrix, right);
             float[] originals = channels.Select(m => muscles[m]).ToArray();
-            for (int d = 0; d < dim; d++) muscles[channels[d]] = Math.Clamp(originals[d] + (float)Math.Clamp(step[d], -0.5, 0.5), -1, 1);
+            for (int d = 0; d < dim; d++)
+            {
+                float limit = muscleLimits[channels[d]];
+                muscles[channels[d]] = Math.Clamp(originals[d] + (float)Math.Clamp(step[d], -0.5, 0.5), -limit, limit);
+            }
             double nextCost = Residual().Sum(v => (double)v * v);
             if (nextCost < cost)
             {
@@ -378,7 +531,55 @@ public sealed class HumanoidSolver
         return b;
     }
 
-    private void Interpolate(MuscleGroup group, float[] values, out Quaternion[] rotations, out Vector3[] positions)
+    private void Interpolate(MuscleGroup group,float[] values,out Quaternion[] rotations,out Vector3[] positions)
+    {
+        if (RangePolicy == HumanoidRangePolicy.Strict)
+        {
+            InterpolateWithin(group,values,out rotations,out positions);
+            return;
+        }
+        // Unity reduces total arm twist to its principal angle before
+        // distributing it between the upper/forearm transforms. Extrapolating
+        // straight through that phase cut predicts the wrong axial branch.
+        // Keep output muscles intact: this is forward evaluation only.
+        for(int d=0;d<values.Length;d++)
+        {
+            var muscle=rig.muscles[group.muscles[d]];
+            if(muscle.dof!=0 || muscle.humanBone is <13 or >16 ||
+                !float.IsFinite(muscle.maximum) || muscle.maximum<=0 ||
+                Math.Abs(muscle.minimum+muscle.maximum)>1e-4f)continue;
+            float period=360f/muscle.maximum;
+            float limit=group.muscleRanges.Length==0?1:group.muscleRanges[d];
+            // A lattice crossing the cut needs separate chart samples; do not
+            // silently reinterpret such a calibration as a smooth chart.
+            if(limit>=period*.5f)continue;
+            if(values[d]>=period*.5f || values[d]<-period*.5f)
+                values[d]-=period*MathF.Floor((values[d]+period*.5f)/period);
+        }
+        var anchor=(float[])values.Clone();bool outside=false;
+        for(int d=0;d<values.Length;d++){float limit=group.muscleRanges.Length==0?1:group.muscleRanges[d];anchor[d]=Math.Clamp(values[d],-limit,limit);outside|=anchor[d]!=values[d];}
+        InterpolateWithin(group,anchor,out rotations,out positions);
+        if(!outside)return;
+        System.Threading.Interlocked.Increment(ref extrapolatedGroups);
+        var anchorRotations=(Quaternion[])rotations.Clone();var anchorPositions=(Vector3[])positions.Clone();
+        for(int d=0;d<values.Length;d++)if(values[d]!=anchor[d])
+        {
+            float limit=group.muscleRanges.Length==0?1:group.muscleRanges[d];
+            float step=Math.Min(.01f,limit*.01f),sign=MathF.Sign(values[d]-anchor[d]);
+            var probe=(float[])anchor.Clone();probe[d]-=sign*step;
+            InterpolateWithin(group,probe,out var qr,out var pr);
+            float distance=Math.Abs(values[d]-anchor[d])/step;
+            for(int b=0;b<rotations.Length;b++)
+            {
+                Vector3 delta=Math3.Log(Quaternion.Normalize(anchorRotations[b]*Quaternion.Inverse(qr[b])));
+                rotations[b]=Quaternion.Normalize(Math3.Exp(delta*distance)*rotations[b]);
+                positions[b]+=(anchorPositions[b]-pr[b])*distance;
+                if(!float.IsFinite(rotations[b].LengthSquared())||!float.IsFinite(positions[b].LengthSquared()))throw new InvalidDataException("Non-finite tangent extrapolation.");
+            }
+        }
+    }
+
+    private void InterpolateWithin(MuscleGroup group, float[] values, out Quaternion[] rotations, out Vector3[] positions)
     {
         var (indices, weights) = Stencil(group, values);
         int count = group.bones.Length;
@@ -405,13 +606,15 @@ public sealed class HumanoidSolver
         float[] negativeRange = negativeRanges[group];
         for (int d = 0; d < dim; d++)
         {
-            float coordinate = (Math.Clamp(values[d], -1, 1) + 1) * 0.5f * (size - 1);
+            float limit = group.muscleRanges.Length == 0 ? 1f : group.muscleRanges[d];
+            float normalized = Math.Clamp(values[d] / limit, -1, 1);
+            float coordinate = (normalized + 1) * 0.5f * (size - 1);
             low[d] = Math.Clamp((int)coordinate - width / 2, 0, size - width);
             weights[d] = new float[width];
             // Muscle zero is not the midpoint of asymmetric anatomical limits.
             // Interpolate in signed angular coordinates to remove that kink.
             float Physical(float muscle) => muscle < 0 ? muscle * negativeRange[d] : muscle;
-            float physical = Physical(Math.Clamp(values[d], -1, 1));
+            float physical = Physical(normalized);
             for (int i = 0; i < width; i++)
             {
                 float w = 1;

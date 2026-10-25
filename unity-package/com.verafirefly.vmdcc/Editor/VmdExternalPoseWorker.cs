@@ -104,11 +104,8 @@ namespace VeraFirefly.VmdConverter.Core.Editor
                     VmdTargetRigData rig = JsonUtility.FromJson<VmdTargetRigData>(
                         File.ReadAllText(targetRigPath));
                     if (rig == null) throw new InvalidDataException("Invalid target rig JSON.");
-                    outputKind = rig.outputKind == VmdExternalOutputKind.HumanoidIk
-                        ? "humanoid-ik"
-                        : rig.outputKind == VmdExternalOutputKind.TargetCalibratedHumanoid
-                            ? "target-humanoid" : "target-fk";
-                    if (noUnity && rig.outputKind == VmdExternalOutputKind.TargetFk)
+                    outputKind = VmdOutputModes.ToArgument(rig.outputKind);
+                    if (noUnity && VmdOutputModes.IsFk(rig.outputKind))
                         throw new ArgumentException("--nlu does not apply to target FK.");
                 }
                 var errorLog = new StringBuilder();

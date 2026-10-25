@@ -6,7 +6,7 @@ using VeraFirefly.VmdConverter.Core.Editor;
 namespace VeraFirefly.VmdConverter.Core.Editor.Nlu
 {
     /// <summary>
-    /// Public batch dispatcher for the external RootMotion and Muscles assemblies.
+    /// Public batch dispatcher for the external HPS curve adapter.
     /// The worker receives --nlu and all conversion options through this entry point.
     /// </summary>
     public static class VmdNluBatchPipeline

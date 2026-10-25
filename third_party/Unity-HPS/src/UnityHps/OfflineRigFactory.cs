@@ -86,7 +86,8 @@ public static class OfflineRigFactory
                     Array.Copy(bind[bones[k]].position,0,samples[s].positions,k*3,3);
                 }
             }
-            groups.Add(new MuscleGroup { muscles=(int[])group.muscles.Clone(),bones=bones,resolution=group.resolution,samples=samples });
+            groups.Add(new MuscleGroup { muscles=(int[])group.muscles.Clone(),bones=bones,resolution=group.resolution,
+                muscleRanges=(float[])group.muscleRanges.Clone(),samples=samples });
         }
         target.groups=groups.ToArray();
         target.reverseCompositionBones=profile.reverseCompositionBones.Select(i=>profile.bones[i].humanBone)

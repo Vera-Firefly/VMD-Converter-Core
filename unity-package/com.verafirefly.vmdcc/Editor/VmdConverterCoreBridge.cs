@@ -21,7 +21,7 @@ namespace VeraFirefly.VmdConverter.Core.Editor
                 throw new ArgumentOutOfRangeException(nameof(sampleRate));
             if (threads < 0 || threads > 256)
                 throw new ArgumentOutOfRangeException(nameof(threads));
-            if (noUnity && outputKind == VmdExternalOutputKind.TargetFk)
+            if (noUnity && VmdOutputModes.IsFk(outputKind))
                 throw new ArgumentException("--nlu does not apply to target FK.");
             return Quote(Path.GetFullPath(executablePath)) + " --pmx " +
                 Quote(Path.GetFullPath(pmxPath)) + " --vmd " +
@@ -30,9 +30,7 @@ namespace VeraFirefly.VmdConverter.Core.Editor
                 sampleRate.ToString(CultureInfo.InvariantCulture) + " --threads " +
                 (threads > 0 ? threads : Math.Max(1, Environment.ProcessorCount - 1)) +
                 " --rig " + Quote(Path.GetFullPath(targetRigJsonPath)) +
-                " --output-kind " + (outputKind == VmdExternalOutputKind.HumanoidIk
-                    ? "humanoid-ik" : outputKind == VmdExternalOutputKind.TargetCalibratedHumanoid
-                        ? "target-humanoid" : "target-fk") +
+                " --output-kind " + VmdOutputModes.ToArgument(outputKind) +
                 (noUnity ? " --nlu" : string.Empty);
         }
 

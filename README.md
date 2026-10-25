@@ -1,129 +1,105 @@
 # VMD Converter Core
 
-English | [简体中文](README.zh-CN.md)
+[简体中文](README.zh-CN.md)
 
-VMD Converter Core (VMDCC) is a standalone PMX/VMD motion conversion application, a set of .NET assemblies, and a Unity integration package. It evaluates PMX bone animation and IK, converts motion to Humanoid or target-skeleton FK curves, and supports direct Unity `.anim` output. The external converter runs without Unity or VRCSDK.
+VMDCC is a Windows x64 PMX/VMD conversion worker and a Unity integration package. It evaluates PMX bones and IK, transports poses to a selected Humanoid skeleton, and writes Humanoid or target-bone FK animation. It does not convert PMX geometry to FBX and does not require VRCSDK.
 
-## Features
-
-- PMX/VMD parsing, PMX IK, append transforms and bone morphs.
-- Humanoid IK, target-calibrated Humanoid and target-skeleton FK output.
-- Morph mapping, facial VMD overrides and unmapped morph output under `Body`.
-- Offline FBX/PMX rig generation through the Unity-HPS adapter.
-- Parallel conversion of multiple VMD files in one process.
-- Direct `.anim` output or binary pose/curve caches for host applications.
-- Public .NET APIs and independent Unity Editor invocation scripts.
-
-PMX-to-FBX export is outside the supported feature set. Standalone Humanoid solving uses calibration/response models; use a rig matching the target model and its Humanoid settings.
-
-## Requirements and installation
-
-The Windows x64 release is self-contained. Keep `VmdConverterCore.exe`, `VmdConverterCore.Shared.dll`, `VmdConverterCore.RootMotion.dll` and `VmdConverterCore.Muscles.dll` together.
-
-Direct offline rig generation additionally uses `VmdConverterCore.Hps.dll` and `UnityHps.Core.dll`; FBX import requires `UnityHps.Fbx.dll`. The complete release includes these files. Unity-HPS is detected **only when `--anim-w` is supplied**. Other modes retain the VMDCC solver. If HPS is absent, direct `.anim` output requires a VMDCC `--rig` file.
-
-For Unity integration, install the release's `com.verafirefly.vmdcc/` directory as a local package. It contains invocation scripts and external binaries under `Tools/`. Unity does not load the .NET 10 DLLs as plugins; they are loaded by the external process.
+Offline animation and curve output requires **Unity-HPS**. Keep `VmdConverterCore.exe`, `VmdConverterCore.Shared.dll`, `VmdConverterCore.Hps.dll`, `UnityHps.Core.dll` and `UnityHps.Fbx.dll` together. Raw `.vccpose` preprocessing for Unity does not require HPS.
 
 ## Quick start
 
-Run from the release directory:
-
 ```powershell
+.\VmdConverterCore.exe --anim-w --pmx model.pmx --vmd dance.vmd --fbx avatar.fbx --output-kind target-humanoid-all --output dance.anim
+.\VmdConverterCore.exe --anim-w --pmx model.pmx --vmd a.vmd --vmd b.vmd --hps-rig rig.json --output-kind target-fk-all --output-dir output
+.\VmdConverterCore.exe --anim-w --pmx model.pmx --vmd dance.vmd --output dance.anim
 .\VmdConverterCore.exe --help
-# Standard Humanoid, using a PMX source rig:
-.\VmdConverterCore.exe --pmx model.pmx --vmd motion.vmd --output motion.anim --anim-w
-# Target-calibrated Humanoid:
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-humanoid --vmd motion.vmd --output motion-target.anim --anim-w
-# Target-skeleton FK:
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-fk --vmd motion.vmd --output motion-fk.anim --anim-w
 ```
 
-`humanoid-ik` uses the PMX source Humanoid skeleton. `target-humanoid` and `target-fk` use the target FBX/HPS rig; without one, they use a PMX Humanoid proxy. FK paths must match the destination skeleton.
+The third command uses the PMX Humanoid rig. Any supplied `--fbx`, `--hps-rig` or `--descriptor` selects the target explicitly; an invalid target fails instead of falling back. FBX and HPS rig inputs are mutually exclusive. Adjacent FBX `.meta` files supply Unity bone mapping and importer settings. `--meta` overrides that file; `--bone-map` supplies an explicit mapping. All `target-*` modes require a target. An HPS rig preserves the calibration available in its JSON; offline FBX import uses portable Humanoid responses.
 
-## Batch conversion
+## Output modes
 
-```powershell
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-humanoid --vmd motion-a.vmd --vmd motion-b.vmd --output-dir output --anim-w --threads 8 --job-threads 2 --memory-mb 256
-```
+| `--output-kind` | Target fitting |
+|---|---|
+| `humanoid-ik` | PMX Humanoid without a target; full-pose target fitting when a target is explicit |
+| `target-humanoid`, `target-fk` | Normal policy: target root/body/legs, source Humanoid upper limb |
+| `target-humanoid-leg`, `target-fk-leg` | Explicit normal/leg policy |
+| `target-humanoid-arm`, `target-fk-arm` | Target upper limb; source Humanoid body/legs |
+| `target-humanoid-all`, `target-fk-all` | Target whole body including upper-limb reconstruction |
 
-For explicit output names and per-motion facial/morph settings, supply `--jobs jobs.json` instead of `--vmd`/`--output-dir`:
+Humanoid writes RootT, RootQ and muscle curves. FK writes local rotations and necessary translations at target skeleton paths. FK continuity chooses equivalent axial branches using source motion and preserves wrist orientation; it does not smooth muscle values by wrapping them. Target modes export a whole animation; the suffix selects the region fitted to the target.
+
+## Processing
+
+PMX/VMD evaluation and PMX IK → source Humanoid encoding → decode on the selected target → merge the selected target region → HPS upper projection and selected-region fitting → reconstruct root from the final muscles → reduce and write curves. FK additionally applies source-guided branch continuation. Body and shoulder context is fitted before dependent arm groups.
+
+Files share the parsed model, rig and response data. `--threads` controls the total frame-worker budget, `--job-threads` controls concurrent files, and `--memory-mb` limits estimated pose-cache reservations. The cache budget is not a process RSS cap.
+
+## Parameters
+
+| Option | Meaning / default |
+|---|---|
+| `--pmx`, `--vmd`, `--output` | Model, motion and single output |
+| `--output-dir` | Output directory for repeated `--vmd`; basenames must be unique |
+| `--jobs` | JSON job manifest; paths resolve from the process working directory |
+| `--anim-w` | Offline Unity YAML `.anim` output; requires HPS |
+| `--rig` | Legacy Unity binding JSON for `.vcccurves`; requires HPS, separate from `--hps-rig` |
+| `--nlu` | Compatibility curve-output alias; does not select another solver |
+| `--hps-dir` | Adapter/SDK folder, default executable folder |
+| `--fbx`, `--hps-rig`, `--descriptor` | Target inputs described above |
+| `--profile` | Portable HPS response profile override |
+| `--rig-output`, `--rig-only` | Save selected/generated HPS rig; rig-only also requires `--anim-w` |
+| `--descriptor-output` | Export an FBX descriptor and exit |
+| `--sample-rate`, `--position-scale`, `--coordinate` | 30 fps, 0.08 metres/PMX unit, 2 (Y180) |
+| `--coordinate` | 0: flip Z; 1: flip X; 2: Y180; 3: identity |
+| `--passes`, `--range-policy` | 3 fitting passes; `tangent` or `strict` |
+| `--leg-fit` | `auto`: geometry for native compensation calibration, rotation for portable FBX; explicit `geometry`/`rotation` overrides |
+| `--fk-continuity`, `--target-leg-ik` | true / false |
+| `--curve-error` | Muscle reduction tolerance 0.00001; zero keeps all keys |
+| `--rotation-error`, `--position-error` | FK reduction: 0.01 degrees / 0.00005 metres |
+| `--threads`, `--job-threads`, `--memory-mb` | CPU count minus one; min(2,jobs,threads); 256 MiB |
+| `--bake-morphs`, `--expression-vmd`, `--morph-map` | true; separate facial VMD; explicit morph bindings |
+| `--duration` | Optional positive duration limit in seconds |
+| `--anim-mode transform` | Full FBX Transform path, plain `target-fk` only |
+| `--structural-bones`, `--coverage-report` | Transform helper mapping and mapping report |
+| `--calibrate`, `--residual` | Optional transform-mode measured axes and bone correction |
+| `--diagnostics-dir` | Optional pipeline pose/rig output directory |
+
+Tangent evaluation extends boundary responses within bounded values; strict evaluation rejects values outside the sampled range. Calibration coverage determines usable accuracy.
 
 ```json
-{
-  "jobs": [
-    {"vmd": "motions/a.vmd", "output": "output/a.anim"},
-    {"vmd": "motions/b.vmd", "output": "output/b.anim", "expressionVmd": "faces/b.vmd", "morphMap": "morphs.json"}
-  ]
-}
+{"jobs":[{"vmd":"a.vmd","output":"out/a.anim"},{"vmd":"b.vmd","output":"out/b.anim","expressionVmd":"face.vmd","morphMap":"morphs.json"}]}
 ```
 
-Paths in the manifest resolve from the process working directory. `--threads` sets the computation budget; `--job-threads` sets concurrent files. `--memory-mb` budgets estimated pose caches, rather than total process memory. Use `--job-threads 1` to reduce concurrent memory use.
+Morph map: `{"mappings":[{"source":"smile","name":"Happy","path":"Body"}]}`. Unmapped morphs keep their source name and use `Body`.
 
-## Rig generation and output formats
+## Unity API and packages
 
-With the HPS adapter installed:
+Install `unity-package/com.verafirefly.vmdcc`; install the optional `com.verafirefly.vmdcw` package for its conversion window and built-in parser. Other Editor scripts can call:
 
-```powershell
-# PMX source rig:
-.\VmdConverterCore.exe --pmx model.pmx --anim-w --rig-only --rig-output pmx-rig.json
-# FBX target rig:
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-humanoid --anim-w --rig-only --rig-output avatar-rig.json
-# Reuse an HPS rig:
-.\VmdConverterCore.exe --pmx model.pmx --hps-rig avatar-rig.json --output-kind target-humanoid --vmd motion.vmd --output motion.anim --anim-w
-```
+- `VmdExternalPoseWorker.PrepareBatch`: raw parallel PMX/IK pose files for native Unity baking.
+- `VmdStandaloneAnimConverter.ConvertBatch` / `BuildCommandLine`: offline HPS `.anim` conversion and reproducible arguments.
+- `HpsCalibrationExporter.ExportBatch`: Unity measured-axis export for transform-mode `--calibrate`; distinct from HPS rig JSON.
+- `VmdTargetRigExporter.Export` / `WriteJson`: legacy GameObject binding contract for curve import.
+- `UnityHps.Reference.UnityHpsCalibration.Export(GameObject, directory, resolution, referenceFrames, seed)`: native Unity calibration to HPS `rig.json`.
+- `VmdConverterCore.PrepareBatch` / `ReadCurves`: HPS `.vcccurves` bridge and checked curve reading.
 
-Use `--hps-rig` for HPS rigs. Use `--rig` for VMDCC rigs exported by `VmdTargetRigExporter` in Unity. These are different formats. Regenerate the rig when the skeleton or Humanoid configuration changes.
+Namespaces are `VeraFirefly.VmdConverter.Core` and `.Editor`, except the calibration exporter noted above. Run Unity scene/Avatar APIs on the Editor main thread. The .NET 10 DLLs in `Tools` execute outside Unity and have disabled Unity plugin importers.
 
-| Mode | Output |
-| --- | --- |
-| No rig and no `--anim-w` | `.vccpose` bone pose cache. |
-| `--rig` | `.vcccurves` target curves. |
-| `--rig --nlu` | Humanoid curves using the standalone RootMotion/Muscles modules. |
-| `--anim-w` | Unity 2022.3-style text `.anim`; uses HPS when available. |
+For .NET10 hosts, reference Shared, Hps and UnityHps.Core, then instantiate `VeraFirefly.VmdConverter.Core.Hps.VmdHpsBackend` through `IVmdHumanoidBackend`. `Create(PmxModel, VmdHumanoidBackendOptions, legacyRig)` returns `IVmdHumanoidSession`; `Solve(VmdMotion, PmxPose[], threads, scheduler)` returns `VmdTargetCurveData`, and `SaveRig` exports its selected rig. Callers supply independently evaluated PMX pose snapshots at the configured sample rate. Use the CLI for `.anim` serialization. These .NET10 assemblies are not loaded into Unity; Editor scripts use the process bridge above.
 
-Unity generates `.meta` files when importing `.anim`. Detailed parameters, morph mapping and output behavior are documented in [the CLI guide](docs/OFFLINE.md).
-
-## Public APIs
-
-| Component | Entry points |
-| --- | --- |
-| `VmdConverterCore.Shared.dll` | `PmxParser.Parse`, `VmdParser.Parse`, `VpdParser.Parse`, `PmxMotionEvaluator.Evaluate`, `VmdTargetFkCurveSolver.Solve`, `VmdTargetCurveFile.Read/Write/HashMotionSources`. |
-| `VmdConverterCore.RootMotion.dll` | `VmdRootMotionSolver.Solve`. |
-| `VmdConverterCore.Muscles.dll` | `VmdMuscleCurveSolver.Solve`. |
-| `VmdConverterCore.Hps.dll` | `VmdHpsBackend.Create`, `PmxRigBuilder.Build/Map`. |
-| `VmdConverterCore.exe` assembly | `VmdHumanoidCurveSolver.Solve/SolveNlu`. |
-| Unity Editor integration | `VmdTargetRigExporter.Export/ExportJson/AttachCanonical/WriteJson`, `VmdConverterCore.PrepareBatch/ReadCurves`, `VmdStandaloneAnimConverter.BuildCommandLine/ConvertBatch/WriteMorphMap`. |
-
-Managed APIs target .NET 10. Types use `VeraFirefly.VmdConverter.Core`; NLU solvers use its `.Nlu` namespace, and Unity integration uses `.Editor`. Keep one mutable evaluator per concurrent worker:
-
-```csharp
-using VeraFirefly.VmdConverter.Core;
-
-PmxModel model = PmxParser.Parse("model.pmx");
-VmdMotion motion = VmdParser.Parse("motion.vmd");
-motion.PrepareForConcurrentSampling();
-var evaluator = new PmxMotionEvaluator(model, motion);
-PmxPose pose = evaluator.Evaluate(30f); // VMD frame number
-```
-
-Target curve solvers accept `VmdTargetRigData` and sampled `PmxPose[]`; sample at `rig.sampleRate`. When using System.Text.Json for the field-based rig contract, enable `IncludeFields`.
-
-For Unity, see [the independent integration guide](examples/unity/README.md), [the C# example](examples/unity/VmdccTargetFkExample.cs) and [the integration call chain](examples/unity/VMDCW_CALL_CHAIN.md). VMDCW and VRCSDK are optional host applications/dependencies, not prerequisites for calling VMDCC.
+VMDCW with Core selected normally runs **EXE raw PMX preprocessing → Unity `HumanPoseHandler` → AnimationClip/AssetDatabase**. Target FK is also baked on the Unity target skeleton. The fully managed option instead runs **EXE + HPS → YAML `.anim` → Unity import**. Unity must still select/read the scene object and import the result. The built-in parser evaluates PMX in-process and uses the native Unity bakers. See [Unity integration examples](examples/unity/README.md).
 
 ## Build
 
-Install .NET 10 SDK, Visual Studio C++ desktop build tools and Windows SDK:
+Use .NET SDK 10 and Visual Studio C++ x64 build tools on Windows. Run:
 
 ```powershell
-.\scripts\Build-Release.ps1
-# Alternative output directory (must be empty):
-.\scripts\Build-Release.ps1 -OutputDirectory artifacts/release-custom
-# Build without the optional HPS adapter:
-.\scripts\Build-Release.ps1 -WithoutUnityHps -OutputDirectory artifacts/release-basic
+./scripts/Build-Release.ps1 -OutputDirectory artifacts/win-x64
 ```
 
-The default output is `artifacts/win-x64/`. It contains the external converter, dependencies, installable Unity package with `.cs`/`.asmdef`/`.meta` files, examples, documentation and licenses. GitHub Actions runs the same script and uploads the full directory. HPS sources are included under `third_party/Unity-HPS`; the build does not require a sibling repository. The build without HPS does not require the native FBX toolchain.
+Use an empty output directory. The executable, runtime libraries and Unity packages are written to `artifacts/win-x64`. Rebuild the HPS adapter after changing its sources or response resources under `third_party/Unity-HPS`. See [build instructions](docs/BUILD.md).
 
 ## License
 
-VMDCC is licensed under [Apache-2.0](LICENSE). Bundled Unity-HPS uses Apache-2.0; ufbx uses its MIT license. Their notices and licenses are retained in the source snapshot and included in releases containing HPS.
+Apache-2.0; see [LICENSE](LICENSE).

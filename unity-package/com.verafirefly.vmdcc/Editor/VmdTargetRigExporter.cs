@@ -201,7 +201,7 @@ namespace VeraFirefly.VmdConverter.Core.Editor
                     });
             }
             rig.morphs = morphs.ToArray();
-            if (options.OutputKind != VmdExternalOutputKind.TargetFk)
+            if (!VmdOutputModes.IsFk(options.OutputKind))
                 rig.humanoid = VmdHumanoidCalibrationExporter.Export(targetRoot,
                     rig.bones);
             return rig;

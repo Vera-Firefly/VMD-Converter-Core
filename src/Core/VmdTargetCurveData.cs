@@ -12,7 +12,13 @@ namespace VeraFirefly.VmdConverter.Core
     {
         HumanoidIk = 0,
         TargetCalibratedHumanoid = 1,
-        TargetFk = 2
+        TargetFk = 2,
+        TargetCalibratedHumanoidAll = 3,
+        TargetFkAll = 4,
+        TargetCalibratedHumanoidArm = 5,
+        TargetFkArm = 6,
+        TargetCalibratedHumanoidLeg = 7,
+        TargetFkLeg = 8
     }
 
     // Unity exports only the target Avatar's static binding data. The executable owns

@@ -34,14 +34,31 @@ public static class Math3
     {
         if (a.LengthSquared() < 1e-16f || b.LengthSquared() < 1e-16f)
             return Quaternion.Identity;
-        a = Vector3.Normalize(a); b = Vector3.Normalize(b);
-        float dot = Math.Clamp(Vector3.Dot(a, b), -1, 1);
-        if (dot < -0.999999f)
+        double ax = a.X, ay = a.Y, az = a.Z, bx = b.X, by = b.Y, bz = b.Z;
+        double length = Math.Sqrt((ax * ax + ay * ay + az * az) * (bx * bx + by * by + bz * bz));
+        double x = (ay * bz - az * by) / length, y = (az * bx - ax * bz) / length,
+            z = (ax * by - ay * bx) / length;
+        double dot = Math.Clamp((ax * bx + ay * by + az * bz) / length, -1, 1);
+        if (dot >= 0)
+            return Quaternion.Normalize(new Quaternion((float)x, (float)y, (float)z, (float)(1 + dot)));
+        double sine = Math.Sqrt(x * x + y * y + z * z);
+        // Use a stable half-angle near 180 degrees rather than 1+dot.
+        // Double intermediates also retain the cross-product axis when nearly
+        // opposite float vectors would lose it to cancellation.
+        if (sine > 1e-12)
         {
+            double twiceSineHalf = Math.Sqrt(2 * (1 - dot));
+            double scale = twiceSineHalf / (2 * sine);
+            return Quaternion.Normalize(new Quaternion((float)(x * scale), (float)(y * scale),
+                (float)(z * scale), (float)(sine / twiceSineHalf)));
+        }
+        if (dot < 0)
+        {
+            a = Vector3.Normalize(a);
             Vector3 axis = Vector3.Cross(a, MathF.Abs(a.X) < 0.8f ? Vector3.UnitX : Vector3.UnitY);
             return Quaternion.CreateFromAxisAngle(Vector3.Normalize(axis), MathF.PI);
         }
-        return Quaternion.Normalize(new Quaternion(Vector3.Cross(a, b), 1 + dot));
+        return Quaternion.Identity;
     }
     public static Quaternion LookRotation(Vector3 forward, Vector3 up)
     {

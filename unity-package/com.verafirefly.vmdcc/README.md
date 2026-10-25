@@ -1,42 +1,31 @@
-# VMD Converter Core for Unity
+# VMD Converter Core
 
-English | [简体中文](README.zh-CN.md)
+External PMX/VMD and IK preparation, plus mandatory HPS offline animation conversion. VMDCW and VRCSDK are not required. This package does not convert PMX geometry to FBX.
 
-This package provides public Unity Editor interfaces for the external VMD Converter Core application. It supports PMX/VMD motion conversion, Humanoid IK, target-calibrated Humanoid, target-skeleton FK and morph mapping. It can be used without VMDCW or VRCSDK.
+Reference `com.verafirefly.vmdcc` and `com.verafirefly.vmdcc.editor` from Editor asmdefs. Public APIs in `VeraFirefly.VmdConverter.Core` / `.Editor`:
 
-## Installation
-
-Install this directory as a local package in Unity 2022.3 on Windows x64. Keep the external executable and its DLLs in `Tools/`. They run in a separate process; the .NET 10 DLLs are disabled as Unity plugins.
-
-## Editor integration
-
-Reference `com.verafirefly.vmdcc` and `com.verafirefly.vmdcc.editor` in your Editor assembly definition. For dedicated NLU calls, also reference `com.verafirefly.vmdcc.nlu.editor`.
+- `VmdExternalPoseWorker.PrepareBatch`: raw PMX/IK poses for native Unity baking when no target rig is passed; no HPS required.
+- `VmdStandaloneAnimConverter.ConvertBatch` / `BuildCommandLine`: EXE + HPS offline `.anim` output; caller imports assets.
+- `VmdTargetRigExporter.ExportJson`: legacy static bindings for `--rig` / `.vcccurves`.
+- `UnityHps.Reference.UnityHpsCalibration.Export`: native Unity Avatar calibration to HPS `rig.json`, for `--hps-rig`.
+- `VmdConverterCore.PrepareBatch` / `ReadCurves`: checked HPS curve-file bridge.
 
 ```csharp
-using VeraFirefly.VmdConverter.Core;
-using VeraFirefly.VmdConverter.Core.Editor;
-
 var options = new VmdStandaloneAnimOptions {
-    ExecutablePath = exePath,
-    PmxPath = pmxPath,
-    FbxPath = VmdSourceFbxUtility.FindSourceFbx(targetGameObject),
-    OutputKind = VmdExternalOutputKind.TargetCalibratedHumanoid,
-    Threads = 8
+    ExecutablePath = executable, PmxPath = pmx, FbxPath = fbx,
+    OutputKind = VmdExternalOutputKind.TargetFkAll
 };
-var jobs = new[] {
-    new VmdStandaloneAnimJob { VmdPath = vmdPath, OutputPath = physicalAnimPath }
-};
-VmdStandaloneAnimConverter.ConvertBatch(options, jobs);
+VmdStandaloneAnimConverter.ConvertBatch(options, new[] {
+    new VmdStandaloneAnimJob { VmdPath = vmd, OutputPath = anim }
+});
 ```
 
-Use absolute physical file paths. Import outputs under Assets with `AssetDatabase.ImportAsset`. `BuildCommandLine(options, job)` returns a single-line command; `WriteMorphMap` writes custom morph mappings. Set `MorphMapPath` and `ExpressionVmdPath` on individual jobs. Unmapped morphs use `Body`.
+Output kinds: `humanoid-ik`, `target-humanoid`, `target-fk`, and `-all` / `-arm` / `-leg` variants for both target types. Normal target modes retain the leg policy. All fits the whole target; arm fits target upper limbs. Every mode writes a complete animation.
 
-The bridge passes `--anim-w`. Offline rig generation requires `VmdConverterCore.Hps.dll` and `UnityHps.Core.dll`; FBX reading additionally requires `UnityHps.Fbx.dll`. HPS is detected only with `--anim-w`. Without HPS, the worker requires a VMDCC-format `--rig` for direct `.anim` output.
+Offline curves require HPS. Keep all five binaries in Tools: EXE, Shared, Hps, UnityHps.Core and UnityHps.Fbx, with disabled Unity plugin importers. Run `--help` for arguments. Explicit FBX/HPS targets never fall back; target modes require one. Legacy `--rig` and HPS `--hps-rig` use different schemas.
 
-## Curve-cache integration
+Run GameObject, Avatar, HumanPoseHandler, AnimationClip and AssetDatabase operations on the Editor main thread. VMDCW normally consumes raw poses and bakes with Unity APIs; its fully managed option delegates curve solving to offline HPS.
 
-Use `VmdTargetRigExporter.Export/ExportJson/AttachCanonical/WriteJson` to export the target rig. Submit a batch with `VmdConverterCore.PrepareBatch`, read it with `ReadCurves`, then create clips with Unity Editor APIs. `VmdNluBatchPipeline.PrepareBatch` provides standalone Humanoid RootMotion/Muscles processing.
+See the [project manual](https://github.com/Vera-Firefly/VMD-Converter-Core/blob/main/README.md) for complete parameters, calling examples and builds.
 
-HPS rigs use `--hps-rig`, while Unity-exported VMDCC rigs use `--rig`. Scene changes are not automatically reflected in source FBX data. Use calibration matching the target Humanoid configuration.
-
-See [the CLI guide](Documentation/OFFLINE.md) and [external binary requirements](Tools/README.md). This package uses [Apache-2.0](LICENSE).
+`HpsCalibrationExporter.ExportBatch` also exports Unity-measured axes for transform-mode `--calibrate`; this is not an HPS rig JSON.

@@ -70,6 +70,7 @@ public static class VmdccTargetFkExample
             var options = new VmdRigExportOptions
             {
                 SampleRate = sampleRate,
+                PositionScale = 0.08f,
                 OutputKind = VmdExternalOutputKind.TargetFk
             };
             VmdTargetRigExporter.ExportJson(targetAvatar, rigPath, options);

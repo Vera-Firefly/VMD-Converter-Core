@@ -50,7 +50,9 @@ public sealed class MuscleGroup
     public int[] muscles { get; set; } = [];
     public int[] bones { get; set; } = [];
     public int resolution { get; set; } = 5;
-    // Uniform [-1,1] lattice, dimension zero is the fastest-changing index.
+    // Positive absolute muscle limit for each lattice dimension. Empty means 1.
+    public float[] muscleRanges { get; set; } = [];
+    // Uniform [-muscleRanges,+muscleRanges] lattice; dimension zero varies fastest.
     public LatticeSample[] samples { get; set; } = [];
 }
 
@@ -143,6 +145,7 @@ public sealed class AccuracyReport
 [JsonSerializable(typeof(AccuracyReport))]
 [JsonSerializable(typeof(HumanPoseBatch))]
 [JsonSerializable(typeof(FbxDocument))]
+[JsonSerializable(typeof(AvatarDescriptor))]
 public partial class HpsJsonContext : JsonSerializerContext;
 
 public static class HpsJson

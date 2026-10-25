@@ -13,6 +13,7 @@ public sealed class FbxDocument
     public Bone[] bones { get; set; } = [];
     public MorphBinding[] morphs { get; set; } = [];
     public bool usedUnityMeta { get; set; }
+    public float unitScale { get; set; } = 1;
 }
 public sealed class MorphBinding
 {
@@ -25,6 +26,8 @@ public sealed class FbxImportOptions
     public string? BoneMapPath { get; set; }
     public bool IgnoreMeta { get; set; }
     public float Scale { get; set; } = 1;
+    /// <summary>Receive recoverable import warnings; null writes them to standard error.</summary>
+    public Action<string>? Warning { get; set; }
 }
 
 /// <summary>Native ufbx C parser; no Autodesk SDK, Python, or Unity required.</summary>
@@ -66,6 +69,13 @@ public static class FbxReader
             }
             string? metaPath = options.IgnoreMeta ? null : options.MetaPath ?? (File.Exists(path + ".meta") ? path + ".meta" : null);
             var meta = metaPath == null ? new UnityFbxMeta() : UnityFbxMeta.Read(metaPath);
+            if (meta.HasCustomMuscleLimits)
+            {
+                string warning = "FBX metadata contains custom Humanoid muscle limits. Conversion continues with default profile limits; " +
+                    "accuracy for these settings is unverified. Use an exported --hps-rig for Avatar-specific responses.";
+                if (options.Warning != null) options.Warning(warning);
+                else Console.Error.WriteLine("Warning: " + warning);
+            }
             var map = new Dictionary<string, string>(meta.HumanBones, StringComparer.Ordinal);
             if (options.BoneMapPath != null)
             {
@@ -135,7 +145,8 @@ public static class FbxReader
                 string name = Marshal.PtrToStringUTF8(hps_fbx_morph_name(scene, i)) ?? "";
                 if (name.Length > 0) morphs.Add(new MorphBinding { name = name, path = PathFor(hps_fbx_morph_node(scene, i)) });
             }
-            return new FbxDocument { source = Path.GetFullPath(path), bones = bones, morphs = morphs.ToArray(), usedUnityMeta = metaPath != null };
+            return new FbxDocument { source = Path.GetFullPath(path), bones = bones, morphs = morphs.ToArray(), usedUnityMeta = metaPath != null,
+                unitScale = options.Scale * meta.GlobalScale };
         }
         finally { hps_fbx_free(scene); }
     }
@@ -147,6 +158,7 @@ internal sealed class UnityFbxMeta
     public Dictionary<string, string> HumanBones { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, Rest> Skeleton { get; } = new(StringComparer.Ordinal);
     public float GlobalScale { get; private set; } = 1;
+    public bool HasCustomMuscleLimits { get; private set; }
     private static float[] Components(string text) => Regex.Matches(text, @"[xyzw]:\s*([-+\d.eE]+)")
         .Select(m => float.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)).ToArray();
     public static UnityFbxMeta Read(string path)
@@ -165,8 +177,9 @@ internal sealed class UnityFbxMeta
             if (human)
             {
                 if (trimmed.StartsWith("- boneName: ")) boneName = trimmed[12..].Trim('"');
-                if (trimmed.StartsWith("humanName: ") && boneName != null) result.HumanBones[trimmed[11..].Trim('"')] = boneName;
-                if (trimmed == "modified: 1") throw new NotSupportedException("Custom Humanoid muscle limits require an explicitly exported --hps-rig; default FBX profile cannot silently ignore them.");
+                if (trimmed.StartsWith("humanName: ") && boneName != null)
+                    result.HumanBones[trimmed[11..].Trim('"').Replace(" ", string.Empty)] = boneName;
+                if (trimmed == "modified: 1") result.HasCustomMuscleLimits = true;
             }
             if (!skeleton) continue;
             if (trimmed.StartsWith("- name: ")) { restName = trimmed[8..].Trim('"'); p = Vector3.Zero; q = Quaternion.Identity; }
@@ -205,6 +218,8 @@ public static class HumanBones
                     if (normalized == part + side || normalized == part + side[0]) return i;
                 }
         }
-        return normalized switch { "pelvis" or "bip001pelvis" => 0, "head" => 10, "larm" => 13, "rarm" => 14, "lforearm" => 15, "rforearm" => 16, _ => -1 };
+        return normalized switch { "pelvis" or "bip001pelvis" => 0, "head" => 10, "larm" => 13, "rarm" => 14, "lforearm" => 15, "rforearm" => 16,
+            "toel" or "ltoe" or "lefttoe" or "toeleft" => 19,
+            "toer" or "rtoe" or "righttoe" or "toeright" => 20, _ => -1 };
     }
 }

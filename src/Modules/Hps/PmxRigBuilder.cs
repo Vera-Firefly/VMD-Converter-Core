@@ -7,8 +7,13 @@ namespace VeraFirefly.VmdConverter.Core.Hps;
 
 public static class PmxRigBuilder
 {
+    /// <summary>
+    /// The PMX 親指０ bone is mapped to Humanoid ThumbProximal instead of a synthetic midpoint
+    /// proxy, so every thumb bone carries real animation (see Motion/V05 P1 note).
+    /// </summary>
     public static Dictionary<int,int> Map(PmxModel model)
     {
+        // Thumb0 carries the proximal thumb motion.
         var rules=new Dictionary<int,string[]> {
             [0]=["下半身","lower body","LowerBody","腰","waist","Hips"], [7]=["上半身","upper body","Spine"],
             [8]=["上半身2","上半身２","upper body2","Chest"], [54]=["上半身3","上半身３","UpperChest"],
@@ -42,7 +47,7 @@ public static class PmxRigBuilder
         foreach(var bone in model.Bones)
         {
             int human=HumanBones.Guess(bone.NameEnglish);
-            if(human>=0&&!result.ContainsKey(human)&&used.Add(bone.Index)) result.Add(human,bone.Index);
+            if(human>=0&&human!=24&&human!=39&&!result.ContainsKey(human)&&used.Add(bone.Index)) result.Add(human,bone.Index);
         }
         return result;
     }
@@ -54,18 +59,34 @@ public static class PmxRigBuilder
         int AvailableParent(int h)
         {
             int parent=Parent(h);
-            while(parent>=0&&!map.ContainsKey(parent)) parent=Parent(parent);
+            while(parent>=0&&!map.ContainsKey(parent)&&!humanToRig.ContainsKey(parent)) parent=Parent(parent);
             return parent;
+        }
+        V WorldPosition(int h)
+        {
+            if(map.TryGetValue(h,out int index))return Position(model.Bones[index].Position,coordinate)*scale;
+            int hand=h==24?17:18,intermediate=h==24?25:40;
+            return (WorldPosition(hand)+WorldPosition(intermediate))*0.5f;
         }
         void Add(int h)
         {
             if(humanToRig.ContainsKey(h))return;
             int parentHuman=AvailableParent(h);if(parentHuman>=0)Add(parentHuman);
-            V p=Position(model.Bones[map[h]].Position,coordinate)*scale;
-            V pp=parentHuman<0?V.Zero:Position(model.Bones[map[parentHuman]].Position,coordinate)*scale;
+            V p=WorldPosition(h);
+            V pp=parentHuman<0?V.Zero:WorldPosition(parentHuman);
             humanToRig[h]=bones.Count;
             bones.Add(new Bone {name=model.Bones[map[h]].NameJapanese,parent=parentHuman<0?0:humanToRig[parentHuman],humanBone=h,position=Math3.A(p-pp)});
         }
+        void AddThumbProxy(int h,int hand,int intermediate)
+        {
+            if(!map.ContainsKey(hand)||!map.ContainsKey(intermediate))return;
+            Add(hand);
+            humanToRig[h]=bones.Count;
+            bones.Add(new Bone {name=h==24?"__LeftThumb0M__":"__RightThumb0M__",parent=humanToRig[hand],humanBone=h,
+                position=Math3.A(WorldPosition(h)-WorldPosition(hand))});
+        }
+        if(!map.ContainsKey(24))AddThumbProxy(24,17,25);
+        if(!map.ContainsKey(39))AddThumbProxy(39,18,40);
         foreach(int h in map.Keys.Order())Add(h);
         var reference=new Rig {bones=bones.ToArray(),hips=humanToRig.GetValueOrDefault(0)};
         var pose=new SkeletonPose(reference);
@@ -89,6 +110,6 @@ public static class PmxRigBuilder
     internal static V Position(UnityEngine.Vector3 p,int coordinate)=>coordinate switch {0=>new(p.x,p.y,-p.z),1=>new(-p.x,p.y,p.z),2=>new(-p.x,p.y,-p.z),_=>new(p.x,p.y,p.z)};
     internal static Q Rotation(UnityEngine.Quaternion q,int coordinate)
     {
-        var converted=VmdTargetFkCurveSolver.ConvertRotation(q,coordinate);return Q.Normalize(new(converted.x,converted.y,converted.z,converted.w));
+        var converted=VmdCurveUtility.ConvertRotation(q,coordinate);return Q.Normalize(new(converted.x,converted.y,converted.z,converted.w));
     }
 }

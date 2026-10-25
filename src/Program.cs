@@ -27,9 +27,11 @@ internal sealed class EvaluationWorker
 
     public EvaluationWorker(PmxModel model, VmdMotion motion)
     {
-        Evaluator = new PmxMotionEvaluator(model, motion);
+        Evaluator = new PmxMotionEvaluator(model, motion, new PmxEvaluationOptions());
         ReusablePose = Evaluator.CreatePose();
     }
+
+
 }
 
 internal static class Program
@@ -45,8 +47,38 @@ internal static class Program
                 return 0;
             }
             Dictionary<string, List<string>> options = ParseArguments(args);
+            if (Get(options,"--descriptor-output") is string descriptorOutput)
+            {
+                if (options.ContainsKey("--vmd") || options.ContainsKey("--jobs") ||
+                    options.ContainsKey("--output") || options.ContainsKey("--output-dir"))
+                    throw new ArgumentException("--descriptor-output is a standalone FBX operation; omit VMD jobs.");
+                string fbx = Path.GetFullPath(RequireSingle(options,"--fbx"));
+                string output = Path.GetFullPath(descriptorOutput);
+                if (!string.Equals(Path.GetExtension(output),".json",StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(output,fbx,StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("--descriptor-output must be a new .json path.");
+                IVmdDescriptorBackend backend = HpsBackendLoader.Require(Get(options,"--hps-dir")) as IVmdDescriptorBackend
+                    ?? throw new InvalidOperationException("Descriptor generation requires the Unity-HPS adapter beside the EXE.");
+                backend.ExportDescriptor(fbx,Get(options,"--meta"),Get(options,"--bone-map"),
+                    Get(options,"--profile"),output);
+                Console.WriteLine(JsonSerializer.Serialize(new { descriptor = output, fbx }));
+                return 0;
+            }
             bool nlu = options.ContainsKey("--nlu");
             bool animWriter = options.ContainsKey("--anim-w");
+            VmdAnimationMode animationMode = Get(options,"--anim-mode")?.ToLowerInvariant() switch
+            {
+                null => VmdAnimationMode.Legacy,
+                "transform" => VmdAnimationMode.Transform,
+                "humanoid" => VmdAnimationMode.Humanoid,
+                _ => throw new ArgumentException("--anim-mode must be transform or humanoid.")
+            };
+            if (animationMode != VmdAnimationMode.Legacy && !animWriter)
+                throw new ArgumentException("--anim-mode requires --anim-w.");
+            if (animationMode == VmdAnimationMode.Transform && nlu)
+                throw new ArgumentException("--anim-mode transform cannot be combined with --nlu.");
+            if (options.ContainsKey("--coverage-report") && animationMode != VmdAnimationMode.Transform)
+                throw new ArgumentException("--coverage-report requires --anim-mode transform.");
             string pmxPath = RequireSingle(options, "--pmx");
             float sampleRate = options.TryGetValue("--sample-rate", out List<string>? rates)
                 ? float.Parse(rates.Single(), CultureInfo.InvariantCulture) : 30f;
@@ -57,7 +89,7 @@ internal static class Program
                 throw new ArgumentOutOfRangeException("--sample-rate");
             if (threads < 1 || threads > 256) throw new ArgumentOutOfRangeException("--threads");
             bool rigOnly = options.ContainsKey("--rig-only");
-            if (rigOnly && !animWriter) throw new ArgumentException("--rig-only requires --anim-w (HPS is probed only in that mode).");
+            if (rigOnly && !animWriter) throw new ArgumentException("--rig-only requires --anim-w.");
             List<PoseJob> jobs = rigOnly ? new() : BuildJobs(options);
             if (Get(options,"--expression-vmd") is string expression) {
                 if(jobs.Count!=1)throw new ArgumentException("--expression-vmd is single-job only; use expressionVmd in --jobs.");
@@ -65,13 +97,13 @@ internal static class Program
             }
             if(Get(options,"--morph-map") is string map) foreach(var job in jobs)job.MorphMap=map;
             if (!rigOnly && jobs.Count == 0) throw new ArgumentException("At least one VMD job is required.");
-            // This gate is intentional: the regular Unity/NLU path never loads HPS.
-            IVmdHumanoidBackend? hps = animWriter ? HpsBackendLoader.Find(Get(options,"--hps-dir")) : null;
-            if (!animWriter && options.Keys.Any(k => k is "--fbx" or "--hps-rig" or "--rig-output" or "--hps-dir" or "--meta" or "--bone-map" or "--profile" or "--passes" or "--curve-error" or "--target-leg-ik" or "--position-scale" or "--coordinate" or "--bake-morphs" or "--morph-map" or "--rotation-error" or "--position-error"))
-                throw new ArgumentException("Offline HPS options require --anim-w. Normal conversion uses --rig and the original solver.");
-
-            string? rigPath = options.TryGetValue("--rig", out List<string>? rigs)
-                ? Path.GetFullPath(rigs.Single()) : null;
+            string? rigPath = Get(options,"--rig") is string rigArgument ? Path.GetFullPath(rigArgument) : null;
+            bool curveOutput=animWriter || rigPath!=null;
+            if(nlu&&!curveOutput)throw new ArgumentException("--nlu requires --rig, or use --anim-w with --fbx/--hps-rig.");
+            if(!curveOutput && options.Keys.Any(k=>k is "--output-kind" or "--fbx" or "--hps-rig" or "--descriptor" or "--hps-dir" or "--range-policy" or "--leg-fit" or "--duration"))
+                throw new ArgumentException("Animation options require --anim-w or an exported Unity --rig. Raw PMX pose preprocessing does not emit animation curves.");
+            IVmdHumanoidBackend? hps=curveOutput?HpsBackendLoader.Require(Get(options,"--hps-dir")):null;
+            if(animWriter&&rigPath!=null)throw new ArgumentException("Use --fbx or --hps-rig with --anim-w; --rig is the Unity bridge curve contract.");
             string? originalRigJson=rigPath==null?null:File.ReadAllText(rigPath);
             VmdTargetRigData? targetRig = rigPath == null ? null :
                 JsonSerializer.Deserialize<VmdTargetRigData>(originalRigJson!,
@@ -79,19 +111,35 @@ internal static class Program
             if (rigPath != null && (targetRig == null ||
                 MathF.Abs(targetRig.sampleRate - sampleRate) > 0.0001f))
                 throw new InvalidDataException("Invalid target rig or sample rate.");
-            VmdExternalOutputKind kind = Get(options,"--output-kind")?.ToLowerInvariant() switch
-            {
-                null => targetRig?.outputKind ?? VmdExternalOutputKind.HumanoidIk,
-                "humanoid-ik" => VmdExternalOutputKind.HumanoidIk,
-                "target-humanoid" => VmdExternalOutputKind.TargetCalibratedHumanoid,
-                "target-fk" => VmdExternalOutputKind.TargetFk,
-                _ => throw new ArgumentException("Unknown --output-kind value.")
-            };
+            VmdExternalOutputKind kind=Get(options,"--output-kind") is string requestedKind
+                ?VmdOutputModes.Parse(requestedKind):targetRig?.outputKind??VmdExternalOutputKind.HumanoidIk;
             if (targetRig != null) targetRig.outputKind = kind;
-            if (hps == null && targetRig == null && (nlu || animWriter || options.ContainsKey("--output-kind")))
-                throw new ArgumentException("The original solver requires --rig for curve/anim output. Install Unity-HPS beside the EXE for offline FBX/PMX rig generation.");
-            if (nlu && kind == VmdExternalOutputKind.TargetFk)
-                throw new ArgumentException("--nlu is for Humanoid Root/Muscle curves, not target-fk.");
+            if (animWriter)
+            {
+                bool hasFbx=options.ContainsKey("--fbx"),hasHpsRig=options.ContainsKey("--hps-rig");
+                bool hasDescriptor=options.ContainsKey("--descriptor");
+                if (animationMode == VmdAnimationMode.Transform && !hasFbx && !hasDescriptor)
+                    throw new ArgumentException("--anim-mode transform requires --fbx or --descriptor.");
+                if (animationMode == VmdAnimationMode.Transform && options.ContainsKey("--rig-output"))
+                    throw new ArgumentException("--rig-output exports a Humanoid rig and is unavailable in transform mode.");
+                if (hasFbx && hasHpsRig)
+                    throw new ArgumentException("Use either --fbx or --hps-rig, not both; the rig calibration source must be unambiguous.");
+                if (hasDescriptor && hasHpsRig)
+                    throw new ArgumentException("Use either --descriptor or --hps-rig, not both.");
+                if (hasDescriptor && !hasFbx && options.ContainsKey("--meta"))
+                    throw new ArgumentException("--meta requires --fbx; the descriptor already contains importer rest data.");
+                if (animationMode == VmdAnimationMode.Humanoid && VmdOutputModes.IsFk(kind))
+                    throw new ArgumentException("--anim-mode humanoid cannot use --output-kind target-fk.");
+                if (animationMode != VmdAnimationMode.Transform && kind != VmdExternalOutputKind.HumanoidIk && !hasFbx && !hasHpsRig && !hasDescriptor)
+                    throw new ArgumentException("Target Humanoid/FK output requires --fbx, --hps-rig or --descriptor.");
+
+            }
+            if(animationMode==VmdAnimationMode.Transform && kind!=VmdExternalOutputKind.TargetFk)
+                throw new ArgumentException("--anim-mode transform supports target-fk only. Use the default mode for calibrated arm/leg/all output.");
+            if ((options.ContainsKey("--meta") || options.ContainsKey("--bone-map")) && !options.ContainsKey("--fbx"))
+                throw new ArgumentException("--meta and --bone-map require --fbx.");
+            if ((options.ContainsKey("--calibrate") || options.ContainsKey("--residual")) && animationMode != VmdAnimationMode.Transform)
+                throw new ArgumentException("--calibrate and --residual apply only to --anim-mode transform.");
             byte[]? rigHash = rigPath == null ? null : PmxPreparedPoseFile.HashFile(rigPath);
 
             pmxPath = Path.GetFullPath(pmxPath);
@@ -106,13 +154,25 @@ internal static class Program
                 var settings = new VmdHumanoidBackendOptions {
                     FbxPath=Get(options,"--fbx"), HpsRigPath=Get(options,"--hps-rig"), MetaPath=Get(options,"--meta"),
                     BoneMapPath=Get(options,"--bone-map"), ProfilePath=Get(options,"--profile"),
+                    DescriptorPath=Get(options,"--descriptor"), AnimationMode=animationMode,
                     PositionScale=Number(options,"--position-scale",targetRig?.positionScale??0.08f),
                     CoordinateConversion=Integer(options,"--coordinate",targetRig?.coordinateConversion??2),
-                    SampleRate=sampleRate, OutputKind=kind, Passes=Integer(options,"--passes",2),
+                    SampleRate=sampleRate, OutputKind=kind, Passes=Integer(options,"--passes",3),
+                    RangePolicy=Get(options,"--range-policy")??"tangent", LegFit=Get(options,"--leg-fit")??"auto",
+                    FkContinuity=Get(options,"--fk-continuity") is string continuity?bool.Parse(continuity):true,
+                    DurationSeconds=Get(options,"--duration") is string durationValue?float.Parse(durationValue,CultureInfo.InvariantCulture):null,
+                    DiagnosticsDirectory=Get(options,"--diagnostics-dir"),
                     CurveError=Number(options,"--curve-error",0.00001f), RotationErrorDegrees=Number(options,"--rotation-error",0.01f), PositionError=Number(options,"--position-error",0.00005f), BakeMorphs=Get(options,"--bake-morphs") is string morphs ? bool.Parse(morphs) : targetRig?.bakeMorphs??true,
-                    TargetLegIk=Get(options,"--target-leg-ik") is string leg ? bool.Parse(leg) : null };
+                    TargetLegIk=Get(options,"--target-leg-ik") is string leg ? bool.Parse(leg) : null,
+                    StructuralBones=Get(options,"--structural-bones") is string structural && bool.Parse(structural),
+                    CalibrationPath=Get(options,"--calibrate"), ResidualPath=Get(options,"--residual") };
+                if (Get(options,"--calibrate") is string calibrationFile && !File.Exists(calibrationFile))
+                    throw new ArgumentException($"--calibrate file not found: {calibrationFile}");
+                if (Get(options,"--residual") is string residualFile && !File.Exists(residualFile))
+                    throw new ArgumentException($"--residual file not found: {residualFile}");
                 if (!float.IsFinite(settings.PositionScale) || settings.PositionScale <= 0 || settings.CoordinateConversion is <0 or >3 || settings.Passes is <1 or >20 || !float.IsFinite(settings.CurveError) || settings.CurveError < 0 || !float.IsFinite(settings.RotationErrorDegrees) || settings.RotationErrorDegrees<0 || !float.IsFinite(settings.PositionError) || settings.PositionError<0)
                     throw new ArgumentException("Invalid offline scale, coordinate, passes or curve error.");
+                if(settings.DurationSeconds is float limit&&(!float.IsFinite(limit)||limit<=0))throw new ArgumentException("--duration must be positive and finite.");
                 hpsSession=hps.Create(model,settings,targetRig);
                 targetRig=hpsSession.AnimationRig;
                 rigHash ??= hpsSession.RigIdentity;
@@ -169,7 +229,7 @@ internal static class Program
                         VmdParser.Parse(Path.GetFullPath(job.ExpressionVmd)));
                 motion.PrepareForConcurrentSampling();
                 uint maximumFrame = motion.MaximumFrame;
-                float duration = maximumFrame / 30f;
+                float duration = Math.Min(maximumFrame / 30f,Get(options,"--duration") is string requestedDuration?float.Parse(requestedDuration,CultureInfo.InvariantCulture):float.PositiveInfinity);
                 int sampleCount = Math.Max(1, checked((int)MathF.Ceiling(duration * sampleRate)) + 1);
                 if ((long)sampleCount * model.Bones.Count > 5000000)
                     throw new InvalidDataException("This motion exceeds the pose cache size limit.");
@@ -181,7 +241,7 @@ internal static class Program
                     () => new EvaluationWorker(model, motion),
                     (sample, _, worker) =>
                     {
-                        float vmdFrame = sample == sampleCount - 1 ? maximumFrame :
+                        float vmdFrame = sample == sampleCount - 1 ? duration*30f :
                             MathF.Abs(sampleRate - 30f) <= 1e-6f
                                 ? MathF.Min(maximumFrame, sample)
                                 : MathF.Min(maximumFrame, sample / sampleRate * 30f);
@@ -200,6 +260,7 @@ internal static class Program
                     }, _ => { });
                 Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
                 string partial = outputPath + ".partial";
+                VmdTargetCurveData? curvesForCoverage = null;
                 try
                 {
                     using (var stream = File.Create(partial))
@@ -210,15 +271,9 @@ internal static class Program
                                 duration, maximumFrame, samples);
                         else
                         {
-                            VmdTargetCurveData curves = hpsSession != null ? hpsSession.Solve(motion,samples,hpsSession.UsesSharedFramePool?threads:frameThreads,framePool.ConcurrentScheduler) : jobRig.outputKind ==
-                                VmdExternalOutputKind.TargetFk
-                                ? VmdTargetFkCurveSolver.Solve(model, motion,
-                                    samples, jobRig, frameThreads)
-                                : nlu
-                                    ? VmdHumanoidCurveSolver.SolveNlu(model, motion,
-                                        samples, jobRig, frameThreads)
-                                    : VmdHumanoidCurveSolver.Solve(model, motion,
-                                        samples, jobRig, frameThreads);
+                            VmdTargetCurveData curves=hpsSession!.Solve(motion,samples,threads,framePool.ConcurrentScheduler);
+                            TrimCurves(curves,duration);
+                            curvesForCoverage = curves;
                             if (animWriter) ApplyMorphMap(curves,job.MorphMap);
                             if (animWriter)
                                 VmdAnimYamlWriter.Write(stream,
@@ -231,6 +286,13 @@ internal static class Program
                         }
                     }
                     File.Move(partial, outputPath, true);
+                    if (Get(options,"--coverage-report") is string coveragePath && hpsSession is IVmdCoverageSession coverage)
+                    {
+                        string report = jobs.Count == 1 ? Path.GetFullPath(coveragePath) :
+                            Path.Combine(Path.GetFullPath(coveragePath),Path.GetFileNameWithoutExtension(outputPath)+".coverage.json");
+                        Directory.CreateDirectory(Path.GetDirectoryName(report)!);
+                        File.WriteAllText(report,coverage.CoverageJson(motion,curvesForCoverage!),new UTF8Encoding(false));
+                    }
                 }
                 finally
                 {
@@ -244,8 +306,8 @@ internal static class Program
                     boneCount = model.Bones.Count,
                     bytes = new FileInfo(outputPath).Length,
                     elapsedMs=timer.ElapsedMilliseconds,
-                    backend=hpsSession==null?"VMDCC-original":"Unity-HPS",
-                    format = animWriter ? "unity-anim-debug" : jobRig == null ? "pose" :
+                    backend=hpsSession==null?"PMX-preprocessing":"Unity-HPS",
+                    format = animWriter ? "unity-anim" : jobRig == null ? "pose" :
                         (nlu ? "nlu-" : string.Empty) +
                         jobRig.outputKind.ToString() + "-curves"
                 }));
@@ -311,13 +373,27 @@ internal static class Program
         return values[0];
     }
 
+    private static void TrimCurves(VmdTargetCurveData data,float duration)
+    {
+        foreach(var curve in data.Curves)
+        {
+            if(curve.Times[^1]<=duration)continue;
+            int end=Array.BinarySearch(curve.Times,duration);
+            if(end>=0){curve.Times=curve.Times[..(end+1)];curve.Values=curve.Values[..(end+1)];continue;}
+            end=~end;
+            float value=end==0?curve.Values[0]:curve.Values[end-1]+(curve.Values[end]-curve.Values[end-1])*
+                (duration-curve.Times[end-1])/(curve.Times[end]-curve.Times[end-1]);
+            curve.Times=curve.Times[..end].Append(duration).ToArray();curve.Values=curve.Values[..end].Append(value).ToArray();
+        }
+    }
+
     private static Dictionary<string, List<string>> ParseArguments(string[] args)
     {
         var options = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         if (args.Length == 0)
             throw new ArgumentException(Usage);
         string[] flags=["--nlu","--anim-w","--rig-only"];
-        string[] valuedOptions=["--pmx","--vmd","--output","--output-dir","--jobs","--rig","--output-kind","--sample-rate","--threads","--fbx","--hps-rig","--hps-dir","--meta","--bone-map","--profile","--rig-output","--position-scale","--coordinate","--passes","--curve-error","--target-leg-ik","--job-threads","--memory-mb","--bake-morphs","--expression-vmd","--morph-map","--rotation-error","--position-error"];
+        string[] valuedOptions=["--pmx","--vmd","--output","--output-dir","--jobs","--rig","--output-kind","--sample-rate","--threads","--fbx","--hps-rig","--hps-dir","--meta","--bone-map","--profile","--rig-output","--position-scale","--coordinate","--passes","--curve-error","--target-leg-ik","--job-threads","--memory-mb","--bake-morphs","--expression-vmd","--morph-map","--rotation-error","--position-error","--anim-mode","--descriptor","--descriptor-output","--coverage-report","--structural-bones","--calibrate","--residual","--range-policy","--leg-fit","--fk-continuity","--duration","--diagnostics-dir"];
         for (int index = 0; index < args.Length;)
         {
             if (!args[index].StartsWith("--", StringComparison.Ordinal))
@@ -346,49 +422,68 @@ internal static class Program
     }
 
     private const string Usage = """
-        VMD Converter Core - PMX/VMD pose and curve worker (no Unity runtime)
+        VMD Converter Core - PMX/VMD preprocessing and HPS animation conversion
         Usage:
-          VmdConverterCore --pmx model.pmx --vmd motion.vmd --output motion.vccpose
-          VmdConverterCore --pmx model.pmx --jobs jobs.json [options]
-          VmdConverterCore --pmx model.pmx --vmd a.vmd --vmd b.vmd --output-dir out [options]
-          VmdConverterCore --pmx model.pmx --anim-w --vmd dance.vmd --output dance.anim [--fbx avatar.fbx]
-          VmdConverterCore --pmx model.pmx --anim-w --rig-only --rig-output pmx-rig.json [--fbx avatar.fbx --output-kind target-humanoid]
-        Options:
-          --pmx <file>           PMX model / IK source (required)
-          --vmd <file>           Repeat for multiple motions; use --output-dir
-          --output <file>        Single output (.vccpose, .vcccurves, or debug .anim)
-          --output-dir <dir>     One file per VMD; duplicate basenames are rejected
-          --jobs <file>          JSON {"jobs":[{"vmd":"...","output":"...","expressionVmd":"..."}]}
-          --rig <file>           Legacy VMDCC target rig (required for original curve solver)
-          --output-kind <kind>   humanoid-ik (default), target-humanoid, target-fk
-          --sample-rate <fps>    Default 30; range (0,240]
-          --threads <count>      Total worker budget, 1..256
-          --job-threads <count>  Concurrent VMD files, default min(2,jobs,threads); 1..32
-          --memory-mb <MiB>      Estimated pose-cache budget, default 256 (not total RSS)
-          --expression-vmd <f>  Single-job facial VMD; batch: expressionVmd in manifest
-          --nlu                 Original standalone Root/Muscle DLL pipeline
-          --anim-w              EXE-only debug .anim writer. ONLY this flag enables HPS lookup.
-                                If HPS exists it handles curves; otherwise original solver + --rig.
-        Offline options (only with --anim-w and Unity-HPS installed):
-          --hps-dir <dir>        Adapter + SDK directory (default EXE directory)
-          --bake-morphs <bool>   Default true
-          --morph-map <file>     {"mappings":[{"source":"smile","name":"Happy","path":"Body"}]}
-                                Batch jobs may set morphMap separately
-          --hps-rig <file>       Reuse HPS rig; calibrated rigs give better accuracy
-          --fbx <file>           Target skeleton for target-humanoid / target-fk
-                                No FBX: build canonical source rig from PMX
-          --meta <file>         FBX Unity importer metadata (adjacent .meta used automatically)
-          --bone-map <file>     JSON mapping human bone names to FBX node names
-          --profile <file>      Optional portable HPS profile override
-          --position-scale <n>  PMX metres/unit; default 0.08
-          --coordinate <n>      0=flip Z, 1=flip X, 2=rotate Y180 (default), 3=identity
-          --passes <n>          HPS fitting passes, 1..20; default 2
-          --rotation-error <n>  FK quaternion reduction tolerance, degrees; default 0.01
-          --position-error <n>  FK position reduction tolerance, metres; default 0.00005
-          --curve-error <n>     Muscle curve reduction tolerance, default 0.00001; 0=all keys
-          --target-leg-ik <bool> Target leg IK; default true for target-humanoid
-          --rig-output <file>   Save generated/reused HPS rig JSON
-          --rig-only            Generate rig then exit (also requires --anim-w)
-          --help, -h            Show help
+          VmdConverterCore --pmx model.pmx --vmd dance.vmd --output dance.vccpose
+          VmdConverterCore --anim-w --pmx model.pmx --vmd dance.vmd --output dance.anim [--fbx avatar.fbx]
+          VmdConverterCore --anim-w --pmx model.pmx --vmd a.vmd --vmd b.vmd --output-dir out [options]
+          VmdConverterCore --anim-w --pmx model.pmx --jobs jobs.json [options]
+          VmdConverterCore --fbx avatar.fbx --descriptor-output avatar.json
+        Input/output:
+          --pmx file             Source skeleton, PMX constraints and IK
+          --vmd file             Repeat for multiple motions
+          --output file          Single-job output
+          --output-dir dir       Batch output; duplicate basenames rejected
+          --jobs file            {"jobs":[{"vmd":"...","output":"...","expressionVmd":"...","morphMap":"..."}]}
+          --anim-w               Write Unity YAML .anim offline; Unity-HPS is REQUIRED
+          --rig file             Unity-exported legacy binding JSON -> .vcccurves (requires HPS)
+          --nlu                  Compatibility alias for HPS curve output; no separate solver
+          --output-kind mode     humanoid-ik (default)
+                                target-humanoid, target-humanoid-all, target-humanoid-arm, target-humanoid-leg
+                                target-fk, target-fk-all, target-fk-arm, target-fk-leg
+                                Normal target modes retain the leg-region policy.
+        Rig selection:
+          --fbx file             Explicit FBX target; adjacent .meta used automatically
+          --hps-rig file         Explicit HPS rig; mutually exclusive with --fbx
+          --descriptor file      Saved FBX descriptor (or matching --fbx)
+                                Explicit targets always participate; invalid targets fail.
+                                humanoid-ik without a target uses PMX; with a target fits the full pose.
+                                All target-* modes require a target.
+          --meta file            Override FBX importer metadata
+          --bone-map file        Human-bone to FBX node mapping JSON
+          --profile file         Portable HPS response profile override
+          --hps-dir dir          HPS adapter/SDK folder; default executable folder
+          --rig-output file      Save selected/generated HPS rig
+          --rig-only             Generate rig and exit; requires --anim-w
+          --descriptor-output f  Export FBX descriptor and exit; no VMD jobs
+        Sampling and fitting:
+          --sample-rate fps      Default 30; (0,240]
+          --position-scale n     PMX metres/unit; default 0.08
+          --coordinate n         0=flip Z, 1=flip X, 2=Y180 (default), 3=identity
+          --passes n             Default 3; 1..20
+          --range-policy policy  tangent (default) or strict calibrated range
+          --leg-fit policy       auto (native calibration: geometry; FBX: rotation), rotation, geometry
+          --fk-continuity bool   Source-guided equivalent FK branch selection; default true
+          --target-leg-ik bool   Additional target IK; default false
+          --curve-error n        Muscle reduction tolerance; default 0.00001; 0 keeps all keys
+          --rotation-error n     FK angular tolerance in degrees; default 0.01
+          --position-error n     FK position tolerance in metres; default 0.00005
+          --threads n            Total worker budget, 1..256; default CPU count minus one
+          --job-threads n        Parallel files; default min(2,jobs,threads); 1..32
+          --memory-mb n          Estimated pose-cache budget; default 256 MiB (not RSS limit)
+          --duration seconds     Positive output duration limit
+        Morphs:
+          --bake-morphs bool     Default true
+          --expression-vmd file Separate facial VMD (single job; manifest expressionVmd for batches)
+          --morph-map file       {"mappings":[{"source":"smile","name":"Happy","path":"Body"}]}
+                                Unmapped morphs use their source name at Body.
+        Additional output:
+          --anim-mode mode       humanoid (default pipeline) or transform (full-FBX target-fk)
+          --coverage-report path Transform mapping report file or batch directory
+          --structural-bones b   Map intervening transform helpers; default false
+          --calibrate file       Measured axes for transform mode
+          --residual file        Per-bone correction for transform mode
+          --diagnostics-dir dir  Optional pipeline-stage pose files
+          --help, -h             Show help
         """;
 }

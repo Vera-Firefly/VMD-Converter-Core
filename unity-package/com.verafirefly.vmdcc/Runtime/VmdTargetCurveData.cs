@@ -12,7 +12,13 @@ namespace VeraFirefly.VmdConverter.Core
     {
         HumanoidIk = 0,
         TargetCalibratedHumanoid = 1,
-        TargetFk = 2
+        TargetFk = 2,
+        TargetCalibratedHumanoidAll = 3,
+        TargetFkAll = 4,
+        TargetCalibratedHumanoidArm = 5,
+        TargetFkArm = 6,
+        TargetCalibratedHumanoidLeg = 7,
+        TargetFkLeg = 8
     }
 
     // Unity exports only the target Avatar's static binding data. The executable owns
@@ -36,8 +42,6 @@ namespace VeraFirefly.VmdConverter.Core
         public bool suppressRightWaistCancellation;
         public VmdExternalOutputKind outputKind = VmdExternalOutputKind.TargetFk;
         public VmdHumanoidCalibrationData humanoid;
-        // The canonical PMX Humanoid Avatar is used for standard output and
-        // for the upper limbs of target-calibrated Humanoid output.
         public VmdTargetRigData canonicalRig;
         public VmdTargetBoneBinding[] bones = Array.Empty<VmdTargetBoneBinding>();
         public VmdTargetMorphBinding[] morphs = Array.Empty<VmdTargetMorphBinding>();

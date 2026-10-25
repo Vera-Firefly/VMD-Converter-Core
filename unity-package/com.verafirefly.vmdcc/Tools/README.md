@@ -1,14 +1,7 @@
-# External converter files
+# External converter runtime
 
-Keep these required files together:
+Keep VmdConverterCore.exe, VmdConverterCore.Shared.dll, VmdConverterCore.Hps.dll, UnityHps.Core.dll and UnityHps.Fbx.dll together. Animation/curve conversion requires HPS; raw .vccpose preparation for native Unity baking does not.
 
-- `VmdConverterCore.exe`
-- `VmdConverterCore.Shared.dll`
-- `VmdConverterCore.RootMotion.dll`
-- `VmdConverterCore.Muscles.dll`
+These .NET10/native binaries execute in the external process. Preserve their disabled Unity PluginImporter settings. build-manifest.json records binary SHA256 digests. Run VmdConverterCore.exe --help for command-line options.
 
-Offline rig generation with `--anim-w` additionally requires `VmdConverterCore.Hps.dll` and `UnityHps.Core.dll`. FBX import requires `UnityHps.Fbx.dll`. Only `--anim-w` searches for HPS.
-
-The .NET 10 and native DLLs are loaded by the external process. Their Unity PluginImporter settings are disabled. Preserve these settings when redistributing the package.
-
-Source checkouts omit binaries. Run `scripts/Build-Release.ps1` from the repository root to assemble the complete package. Releases include the project licenses and third-party notices. See the [package README](../README.md) and [CLI guide](../Documentation/OFFLINE.md).
+Build the complete CLI and Unity packages with scripts/Build-Release.ps1 from the source repository. See the package README for public Editor APIs and license notices in this folder.

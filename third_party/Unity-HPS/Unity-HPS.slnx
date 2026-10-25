@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/UnityHps/UnityHps.csproj" />
+  <Project Path="src/UnityHps.Cli/UnityHps.Cli.csproj" />
+</Solution>

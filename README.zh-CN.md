@@ -1,129 +1,104 @@
 # VMD Converter Core
 
-[English](README.md) | 简体中文
+[English](README.md)
 
-VMD Converter Core（VMDCC）提供独立的 PMX/VMD 动作转换程序、.NET 程序集及 Unity 集成包。它负责 PMX 骨骼动作与 IK 求解，将动作转换为 Humanoid 或目标骨架 FK 曲线，并支持直接输出 Unity `.anim`。外部转换程序无需 Unity 或 VRCSDK。
+VMDCC 是 Windows x64 PMX/VMD 转换程序及 Unity 接入包，负责 PMX 骨骼与 IK 求解、Humanoid 姿态转换、目标骨架 FK 曲线及动画输出。不提供 PMX 几何模型转 FBX，不依赖 VRCSDK。
 
-## 功能
+**离线动画及曲线输出必须使用 Unity-HPS。** 以下文件需放在同一目录：`VmdConverterCore.exe`、`VmdConverterCore.Shared.dll`、`VmdConverterCore.Hps.dll`、`UnityHps.Core.dll`、`UnityHps.Fbx.dll`。供 Unity 原生烘焙使用的原始 `.vccpose` 预处理不需要 HPS。
 
-- PMX/VMD 解析、PMX IK、追加变换和骨骼形态键。
-- Humanoid IK、目标校准 Humanoid 和目标骨架 FK 输出。
-- 形态键映射、表情 VMD 覆盖，以及未映射形态键的 `Body` 路径输出。
-- 通过 Unity-HPS 适配器离线生成 FBX/PMX rig。
-- 在一次进程调用中并行转换多个 VMD。
-- 直接输出 `.anim`，或输出供调用方读取的姿态、曲线二进制缓存。
-- 提供公开 .NET 接口及可独立使用的 Unity Editor 调用脚本。
-
-当前功能不包含 PMX 转 FBX。独立 Humanoid 求解采用校准或响应模型；应使用与目标模型及其 Humanoid 设置相匹配的 rig。
-
-## 运行要求与安装
-
-Windows x64 发布包为自包含程序。须将 `VmdConverterCore.exe`、`VmdConverterCore.Shared.dll`、`VmdConverterCore.RootMotion.dll` 和 `VmdConverterCore.Muscles.dll` 放在同一目录。
-
-离线 rig 生成另需 `VmdConverterCore.Hps.dll` 和 `UnityHps.Core.dll`，读取 FBX 还需 `UnityHps.Fbx.dll`。完整发布包已包含这些文件。**只有传入 `--anim-w` 才查找 Unity-HPS**，其他模式沿用 VMDCC 求解器。没有 HPS 时，直接输出 `.anim` 需要 VMDCC 格式的 `--rig` 文件。
-
-Unity 集成时，将发布包中的 `com.verafirefly.vmdcc/` 安装为本地包。包内包含调用脚本，外部二进制位于 `Tools/`。这些 .NET 10 DLL 的 Unity 插件加载已禁用，由外部进程加载。
-
-## 快速开始
-
-在发布目录执行：
+## 使用
 
 ```powershell
+.\VmdConverterCore.exe --anim-w --pmx model.pmx --vmd dance.vmd --fbx avatar.fbx --output-kind target-humanoid-all --output dance.anim
+.\VmdConverterCore.exe --anim-w --pmx model.pmx --vmd a.vmd --vmd b.vmd --hps-rig rig.json --output-kind target-fk-all --output-dir output
+.\VmdConverterCore.exe --anim-w --pmx model.pmx --vmd dance.vmd --output dance.anim
 .\VmdConverterCore.exe --help
-# 标准 Humanoid，使用 PMX 源 rig：
-.\VmdConverterCore.exe --pmx model.pmx --vmd motion.vmd --output motion.anim --anim-w
-# 目标校准 Humanoid：
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-humanoid --vmd motion.vmd --output motion-target.anim --anim-w
-# 目标骨架 FK：
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-fk --vmd motion.vmd --output motion-fk.anim --anim-w
 ```
 
-`humanoid-ik` 使用 PMX 源人体骨架。`target-humanoid` 与 `target-fk` 使用目标 FBX/HPS rig，未指定目标时使用 PMX 人体代理骨架。FK 路径须与动画使用方的骨架一致。
+第三条命令仅使用 PMX Humanoid rig。明确填写 `--fbx`、`--hps-rig` 或 `--descriptor` 后必须使用该目标，错误输入直接失败，不回退到 PMX。FBX 与 HPS rig 互斥；FBX 相邻 `.meta` 提供骨骼映射及导入设置，`--meta` 可覆盖，`--bone-map` 可另给映射。所有 `target-*` 模式必须有目标。HPS rig 保留 JSON 内的标定数据；纯离线 FBX 采用可移植 Humanoid 响应。
 
-## 批量转换
+## 模式
 
-```powershell
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-humanoid --vmd motion-a.vmd --vmd motion-b.vmd --output-dir output --anim-w --threads 8 --job-threads 2 --memory-mb 256
-```
+| `--output-kind` | 目标求解范围 |
+|---|---|
+| `humanoid-ik` | 无目标时使用 PMX；有明确目标时对整身目标姿态拟合 |
+| `target-humanoid`、`target-fk` | 正常模式：目标根运动、躯干、下肢，保留源 Humanoid 上肢 |
+| `target-humanoid-leg`、`target-fk-leg` | 显式采用正常／下肢策略 |
+| `target-humanoid-arm`、`target-fk-arm` | 目标上肢；保留源 Humanoid 躯干和下肢 |
+| `target-humanoid-all`、`target-fk-all` | 目标全身，包括目标上肢反解 |
 
-需要指定输出名称、逐动作表情或形态键映射时，以 `--jobs jobs.json` 替代 `--vmd`/`--output-dir`：
+Humanoid 输出 RootT、RootQ、肌肉曲线；FK 按目标路径输出局部旋转及必要的位移。模式后缀决定目标拟合区域，输出仍为整段全身动作。FK 连续性处理参考源动作选择等效轴向分支，保持手腕方向，不通过肌肉标量取模消除跳变。
+
+## 求解流程
+
+PMX/VMD 解析及 PMX IK → 源 Humanoid 编码 → 选定目标 rig 解码 → 合并所选目标区域 → HPS 上肢投影及区域拟合 → 依据最终肌肉重建根运动 → 曲线压缩及输出。FK 再进行参考源动作的分支连续性处理。依赖链先拟合躯干、肩，再拟合手臂。
+
+批量共用解析后的模型、rig 和响应数据；总帧线程受 `--threads` 限制，文件并发由 `--job-threads` 控制，`--memory-mb` 是姿态缓存估算预算，不是进程总内存上限。
+
+## 参数
+
+| 参数 | 用途／默认值 |
+|---|---|
+| `--pmx`、`--vmd`、`--output` | 源模型、动作、单文件输出 |
+| `--output-dir`、`--jobs` | 重复 `--vmd` 的输出目录；JSON 批任务，路径相对进程工作目录 |
+| `--anim-w` | 离线写出 Unity YAML `.anim`，必须有 HPS |
+| `--rig` | Unity 导出的旧版绑定 JSON，用于 `.vcccurves`，必须有 HPS；与 `--hps-rig` 不同 |
+| `--nlu` | 兼容曲线调用参数，不再选择另一套求解器 |
+| `--hps-dir` | HPS 适配程序集目录，默认 EXE 所在目录 |
+| `--fbx`、`--hps-rig`、`--descriptor` | 明确指定目标，边界见上文 |
+| `--meta`、`--bone-map`、`--profile` | FBX 导入信息、骨骼映射、可移植响应配置 |
+| `--rig-output`、`--rig-only` | 保存 rig；仅生成 rig，仍需 `--anim-w` |
+| `--descriptor-output` | 从 FBX 导出描述并退出，不添加 VMD 任务 |
+| `--sample-rate`、`--position-scale` | 30 fps；0.08 米/PMX单位 |
+| `--coordinate` | 默认 2；0 翻转 Z，1 翻转 X，2 绕 Y180，3 不转换 |
+| `--passes`、`--range-policy` | 默认 3；`tangent` 或 `strict` |
+| `--leg-fit` | `auto`：原生位移补偿标定用几何拟合，纯 FBX 用旋转拟合；可指定 `geometry`／`rotation` |
+| `--fk-continuity`、`--target-leg-ik` | 默认 true／false |
+| `--curve-error` | 肌肉压缩误差 0.00001，0 保留全部关键帧 |
+| `--rotation-error`、`--position-error` | FK 压缩误差：0.01 度、0.00005 米 |
+| `--threads`、`--job-threads`、`--memory-mb` | CPU 数减一；min(2,任务数,线程数)；256 MiB |
+| `--bake-morphs`、`--expression-vmd`、`--morph-map` | 默认 true；表情 VMD；形态键映射 |
+| `--duration` | 限定正数秒数 |
+| `--anim-mode transform` | 完整 FBX Transform 输出，仅普通 `target-fk` |
+| `--structural-bones`、`--coverage-report` | Transform 辅助骨映射与覆盖报告 |
+| `--calibrate`、`--residual` | Transform 模式的测量轴与逐骨修正 |
+| `--diagnostics-dir` | 可选的中间姿态与 rig 输出目录 |
+
+`tangent` 在有限范围内延拓边界响应；`strict` 拒绝超出采样范围的值。精度受标定覆盖范围影响。
 
 ```json
-{
-  "jobs": [
-    {"vmd": "motions/a.vmd", "output": "output/a.anim"},
-    {"vmd": "motions/b.vmd", "output": "output/b.anim", "expressionVmd": "faces/b.vmd", "morphMap": "morphs.json"}
-  ]
-}
+{"jobs":[{"vmd":"a.vmd","output":"out/a.anim"},{"vmd":"b.vmd","output":"out/b.anim","expressionVmd":"face.vmd","morphMap":"morphs.json"}]}
 ```
 
-清单中的相对路径以进程当前工作目录为基准。`--threads` 设置计算线程预算，`--job-threads` 设置并发文件数；`--memory-mb` 约束估算的姿态缓存，不代表进程总内存上限。可用 `--job-threads 1` 减少并发内存占用。
+映射 JSON：`{"mappings":[{"source":"smile","name":"Happy","path":"Body"}]}`。未映射形态键按源名称写入 `Body`。
 
-## rig 生成与输出格式
+## Unity 公开接口与调用链
 
-安装 HPS 适配器后可使用：
+安装 `unity-package/com.verafirefly.vmdcc`。可另装 `com.verafirefly.vmdcw` 获得窗口及内置解析。任意 Editor 脚本可调用：
 
-```powershell
-# PMX 源 rig：
-.\VmdConverterCore.exe --pmx model.pmx --anim-w --rig-only --rig-output pmx-rig.json
-# FBX 目标 rig：
-.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-humanoid --anim-w --rig-only --rig-output avatar-rig.json
-# 复用 HPS rig：
-.\VmdConverterCore.exe --pmx model.pmx --hps-rig avatar-rig.json --output-kind target-humanoid --vmd motion.vmd --output motion.anim --anim-w
-```
+- `VmdExternalPoseWorker.PrepareBatch`：EXE 并行生成原始 PMX/IK 姿态，供 Unity 原生烘焙。
+- `VmdStandaloneAnimConverter.ConvertBatch`／`BuildCommandLine`：离线 HPS `.anim` 与对应命令。
+- `HpsCalibrationExporter.ExportBatch`：通过 Unity 导出 Transform 模式 `--calibrate` 使用的测量轴描述，与 HPS rig JSON 不同。
+- `VmdTargetRigExporter.Export`／`WriteJson`：GameObject 的旧版绑定参数。
+- `UnityHps.Reference.UnityHpsCalibration.Export(GameObject, directory, resolution, referenceFrames, seed)`：通过 Unity API 导出 HPS `rig.json` 标定。
+- `VmdConverterCore.PrepareBatch`／`ReadCurves`：HPS 曲线文件调用与校验读取。
 
-HPS rig 使用 `--hps-rig`；由 Unity 中 `VmdTargetRigExporter` 导出的 VMDCC rig 使用 `--rig`。两者格式不同。骨架或 Humanoid 配置变更后应重新生成 rig。
+除标定导出器外，命名空间为 `VeraFirefly.VmdConverter.Core` 及 `.Editor`。Unity 场景、Avatar 操作必须在 Editor 主线程运行。Tools 内 .NET10 DLL 的 Unity 插件加载已禁用，由外部进程使用。
 
-| 模式 | 输出 |
-| --- | --- |
-| 不传 rig，也不传 `--anim-w` | `.vccpose` 骨骼姿态缓存。 |
-| `--rig` | `.vcccurves` 目标曲线。 |
-| `--rig --nlu` | 通过独立 RootMotion/Muscles 模块生成 Humanoid 曲线。 |
-| `--anim-w` | Unity 2022.3 格式的文本 `.anim`；有 HPS 时使用 HPS。 |
+.NET10 宿主可引用 Shared、Hps、UnityHps.Core，通过 `IVmdHumanoidBackend` 实例化 `VeraFirefly.VmdConverter.Core.Hps.VmdHpsBackend`。`Create(PmxModel, VmdHumanoidBackendOptions, legacyRig)` 返回 `IVmdHumanoidSession`；`Solve(VmdMotion, PmxPose[], threads, scheduler)` 返回 `VmdTargetCurveData`，`SaveRig` 导出当前 rig。调用者按配置采样率提供独立的 PMX 姿态快照；写 `.anim` 使用 CLI。这些 .NET10 程序集不加载到 Unity，Editor 脚本使用前述进程桥。
 
-Unity 导入 `.anim` 时生成 `.meta`。完整参数、形态键映射及输出行为见[命令行使用指南](docs/OFFLINE.md)。
-
-## 公开接口
-
-| 组件 | 调用入口 |
-| --- | --- |
-| `VmdConverterCore.Shared.dll` | `PmxParser.Parse`、`VmdParser.Parse`、`VpdParser.Parse`、`PmxMotionEvaluator.Evaluate`、`VmdTargetFkCurveSolver.Solve`、`VmdTargetCurveFile.Read/Write/HashMotionSources`。 |
-| `VmdConverterCore.RootMotion.dll` | `VmdRootMotionSolver.Solve`。 |
-| `VmdConverterCore.Muscles.dll` | `VmdMuscleCurveSolver.Solve`。 |
-| `VmdConverterCore.Hps.dll` | `VmdHpsBackend.Create`、`PmxRigBuilder.Build/Map`。 |
-| `VmdConverterCore.exe` 程序集 | `VmdHumanoidCurveSolver.Solve/SolveNlu`。 |
-| Unity Editor 集成 | `VmdTargetRigExporter.Export/ExportJson/AttachCanonical/WriteJson`、`VmdConverterCore.PrepareBatch/ReadCurves`、`VmdStandaloneAnimConverter.BuildCommandLine/ConvertBatch/WriteMorphMap`。 |
-
-托管接口面向 .NET 10。类型位于 `VeraFirefly.VmdConverter.Core`，NLU 求解器使用其 `.Nlu` 命名空间，Unity 集成使用 `.Editor`。每个并发工作单元须独立持有可变求值器：
-
-```csharp
-using VeraFirefly.VmdConverter.Core;
-
-PmxModel model = PmxParser.Parse("model.pmx");
-VmdMotion motion = VmdParser.Parse("motion.vmd");
-motion.PrepareForConcurrentSampling();
-var evaluator = new PmxMotionEvaluator(model, motion);
-PmxPose pose = evaluator.Evaluate(30f); // VMD 帧编号
-```
-
-目标曲线求解器接收 `VmdTargetRigData` 和按 `rig.sampleRate` 采样的 `PmxPose[]`。使用 System.Text.Json 读取以字段定义的 rig 时，须启用 `IncludeFields`。
-
-Unity 接入见[独立调用指南](examples/unity/README.md)、[C# 示例](examples/unity/VmdccTargetFkExample.cs)和[集成调用链](examples/unity/VMDCW_CALL_CHAIN.md)。调用 VMDCC 不要求安装 VMDCW 或 VRCSDK。
+VMDCW 选择 Core 时默认调用链为 **EXE 原始 PMX 预处理 → Unity `HumanPoseHandler` → AnimationClip／AssetDatabase**；目标 FK 同样在 Unity 目标骨架上烘焙。勾选全部托管后才使用 **EXE＋HPS → YAML `.anim` → Unity 导入**；场景目标选择、读取及资源导入仍在 Unity 中进行。内置解析在进程内评估 PMX，随后使用 Unity 原生烘焙器。详见 [Unity 调用示例](examples/unity/README.zh-CN.md)。
 
 ## 构建
 
-安装 .NET 10 SDK、Visual Studio C++ 桌面开发工具和 Windows SDK：
+Windows 安装 .NET SDK10 与 Visual Studio C++ x64 构建工具，运行：
 
 ```powershell
-.\scripts\Build-Release.ps1
-# 指定其他输出目录，目录须为空：
-.\scripts\Build-Release.ps1 -OutputDirectory artifacts/release-custom
-# 不包含可选 HPS 适配器：
-.\scripts\Build-Release.ps1 -WithoutUnityHps -OutputDirectory artifacts/release-basic
+./scripts/Build-Release.ps1 -OutputDirectory artifacts/win-x64
 ```
 
-默认输出为 `artifacts/win-x64/`，包含外部程序、依赖、可安装的 Unity 包及其 `.cs`/`.asmdef`/`.meta` 文件、示例、文档和许可证。GitHub Actions 执行相同脚本并上传整个目录。HPS 源码位于 `third_party/Unity-HPS`，构建无需相邻仓库。不包含 HPS 的构建无需原生 FBX 工具链。
+输出目录必须为空。可执行文件、运行库与 Unity 包位于 `artifacts/win-x64`。修改 `third_party/Unity-HPS` 下的源码或响应资源后，应重新构建 HPS 适配程序集。详见 [构建说明](docs/BUILD.md)。
 
-## 开源协议
+## 协议
 
-VMDCC 使用 [Apache-2.0](LICENSE)。随附的 Unity-HPS 使用 Apache-2.0，ufbx 使用其 MIT 许可；源码快照及包含 HPS 的发布包保留相应署名和许可证。
+Apache-2.0，见 [LICENSE](LICENSE)。

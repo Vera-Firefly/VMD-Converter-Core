@@ -6,3 +6,11 @@ obj/
 /artifacts/
 
 third_party/Unity-HPS/native/win-x64/
+work/
+
+# Local acceptance inputs, outputs and interim reports
+/work/
+/verification/
+/reports/
+/Motion/
+/calibration/

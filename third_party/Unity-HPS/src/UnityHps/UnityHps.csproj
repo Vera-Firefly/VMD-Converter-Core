@@ -2,6 +2,7 @@
   <PropertyGroup><AssemblyName>UnityHps.Core</AssemblyName></PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="../../profiles/*.json.gz" LogicalName="UnityHps.Profiles.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../profiles/upper/*.gz" LogicalName="UnityHps.Upper.%(Filename)%(Extension)" WithCulture="false" />
     <None Include="../../native/win-x64/UnityHps.Fbx.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="UnityHps.Fbx.dll" />
   </ItemGroup>
 </Project>

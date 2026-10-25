@@ -5,11 +5,12 @@
 ```powershell
 .\VmdConverterCore.exe --help
 .\VmdConverterCore.exe --pmx model.pmx --vmd motion.vmd --output motion.anim --anim-w
+.\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind humanoid-ik --vmd motion.vmd --output motion-fbx.anim --anim-w
 .\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-humanoid --vmd motion.vmd --output motion-target.anim --anim-w
 .\VmdConverterCore.exe --pmx model.pmx --fbx avatar.fbx --output-kind target-fk --vmd motion.vmd --output motion-fk.anim --anim-w
 ```
 
-`humanoid-ik` 使用 PMX 源人体骨架，`--fbx` 在此类型中提供形态键绑定。`target-humanoid` 使用目标骨架及腿部 IK；`target-fk` 输出目标骨架 Transform 曲线。未指定 FBX/HPS rig 时使用 PMX 人体代理骨架，其 FK 路径不代表任意目标 Avatar 的路径。
+`humanoid-ik` 在没有 `--fbx` / `--hps-rig` 时使用 PMX 源 rig；明确指定任一参数时，先求解 PMX 整身 Humanoid 姿态，再由所选目标 rig 解码并拟合根运动和全部肌肉曲线。`target-humanoid` 将 PMX 整身姿态在目标 rig 上解码并拟合根运动与下半身，上半身保留 PMX 源肌肉值；`target-fk` 输出目标骨架 Transform 曲线。后两种输出必须提供 `--fbx` 或 `--hps-rig`。两种目标 rig 参数不能同时使用，且不能与旧格式 `--rig` 混用；指定目标 rig 失败时不回退到 PMX。PMX IK 已在姿态求值阶段执行；额外的目标腿部 IK 默认关闭。
 
 ## Unity-HPS 配置
 
@@ -17,7 +18,7 @@
 | --- | --- |
 | 不传 `--anim-w` | VMDCC 原求解器，不加载 HPS。 |
 | `--anim-w` 且安装了 HPS | 通过 `VmdConverterCore.Hps.dll` 调用 `UnityHps.Core.dll`。 |
-| `--anim-w` 且未安装 HPS | VMDCC 原求解器，要求提供原格式 `--rig`。 |
+| `--anim-w` 且未安装 HPS | 仅 `humanoid-ik` 可使用 VMDCC 原求解器，并要求提供原格式 `--rig`。 |
 
 HPS 默认从 EXE 同目录查找，可用 `--hps-dir` 指定目录。读取 FBX 另需 `UnityHps.Fbx.dll`。安装损坏或版本不兼容时返回错误。
 
@@ -88,8 +89,8 @@ HPS rig 使用 `--hps-rig`，Unity 导出的 VMDCC 校准 rig 使用 `--rig`，�
 | 参数 | 用途与默认值 |
 | --- | --- |
 | `--hps-dir <dir>` | HPS 适配器与 SDK 所在目录。 |
-| `--fbx <file>` | 目标 FBX。 |
-| `--hps-rig <file>` | 已生成的 HPS rig。 |
+| `--fbx <file>` | 目标 FBX；为 `humanoid-ik` 提供时也会用于 rig 校准。 |
+| `--hps-rig <file>` | 已生成的 HPS rig；与 `--fbx` 二选一。 |
 | `--meta <file>` | FBX 导入元数据。 |
 | `--bone-map <file>` | 显式人体骨骼映射 JSON。 |
 | `--profile <file>` | 响应模板，JSON 或 JSON.gz。 |
@@ -98,7 +99,7 @@ HPS rig 使用 `--hps-rig`，Unity 导出的 VMDCC 校准 rig 使用 `--rig`，�
 | `--position-scale <number>` | PMX 单位到米的比例，默认 `0.08`。 |
 | `--coordinate <number>` | `0` 翻转 Z，`1` 翻转 X，`2` 绕 Y 轴旋转 180°（默认），`3` 不转换。 |
 | `--passes <count>` | 拟合轮数，默认 `2`，范围 `1..20`。 |
-| `--target-leg-ik <bool>` | 目标腿部 IK；目标 Humanoid 默认 `true`，FK 默认 `false`。 |
+| `--target-leg-ik <bool>` | PMX IK 之后额外执行目标腿部 IK；默认 `false`。 |
 | `--curve-error <number>` | 肌肉曲线减帧误差，默认 `0.00001`；`0` 保留所有样本。 |
 | `--rotation-error <degrees>` | FK 旋转减帧误差，默认 `0.01` 度；`0` 保留所有样本。 |
 | `--position-error <metres>` | FK 位置减帧误差，默认 `0.00005` 米；`0` 保留所有样本。 |
@@ -117,6 +118,6 @@ HPS rig 使用 `--hps-rig`，Unity 导出的 VMDCC 校准 rig 使用 `--rig`，�
 
 ## Unity 集成
 
-调用方可选择读取 `.vccpose`/`.vcccurves` 后创建 AnimationClip，或调用 `VmdStandaloneAnimConverter.ConvertBatch` 由外部程序生成 `.anim` 后导入。`BuildCommandLine` 返回单行命令，`WriteMorphMap` 写出映射文件。GameObject 到 FBX 的路径解析使用 `VmdSourceFbxUtility.FindSourceFbx`；场景中对骨架的修改不会自动写回源 FBX。
+调用方可选择读取 `.vccpose`/`.vcccurves` 后创建 AnimationClip，或调用 `VmdStandaloneAnimConverter.ConvertBatch` 由外部程序生成 `.anim` 后导入。`BuildCommandLine` 返回单行命令，`WriteMorphMap` 写出映射文件。GameObject 到 FBX 的路径解析使用 `VmdSourceFbxUtility.FindSourceFbx`；若目标输出未找到源 FBX，可在 VMDCW 的 PMX 设置中指定 HPS rig JSON。场景中对骨架的修改不会自动写回源 FBX。
 
-具体接口和示例见[包调用指南](../README.md)。离线 Humanoid 转换采用响应模型，自定义人体设置应使用匹配的校准 rig。`.anim` 使用 Unity 2022.3 文本序列化格式，导入时由 Unity 管理 `.meta`。
+具体接口和示例见[Unity 调用指南](../examples/unity/README.md)。离线 Humanoid 转换采用响应模型，自定义人体设置应使用匹配的校准 rig。`.anim` 使用 Unity 2022.3 文本序列化格式，导入时由 Unity 管理 `.meta`。

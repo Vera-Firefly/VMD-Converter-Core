@@ -1,35 +1,19 @@
-# Integration call chain
+# VMDCW conversion call chain
 
-The same public interfaces can be used by VMDCW or any independent Unity Editor host.
+## Built-in parser
 
-## Curve-cache integration
+`VmdConverterPage.ConvertManagedMotionsParallel` → `ManagedBatchSession.Prepare` → PMX evaluation workers → main-thread `Bake`, `BakeTargetHumanoid` or `BakeTargetFk` → Unity HumanPoseHandler / Transform baking → `AnimationUtility` / `AssetDatabase`.
 
-1. Export a target rig with `VmdTargetRigExporter.Export` or `ExportJson`.
-2. For Humanoid curves, attach the canonical PMX rest-pose calibration with `AttachCanonical`, then save with `WriteJson`.
-3. Submit motions through `VmdConverterCore.PrepareBatch`; select `noUnity: true` for standalone Humanoid curve solving.
-4. Read each output using `VmdExternalPoseBatch.GetPosePath` and `VmdConverterCore.ReadCurves`.
-5. Create and save AnimationClip assets using Unity's Editor APIs. Dispose the batch to release temporary files.
+## Core parser with native Unity curves (default)
 
-The [target FK example](VmdccTargetFkExample.cs) implements this path. `VmdNluBatchPipeline.PrepareBatch` provides a dedicated entry point for the standalone RootMotion/Muscles modules.
+`ConvertDirectMotions` → `ConvertManagedMotionsParallel(forceExternalPose: true)` → `VmdExternalPoseWorker.PrepareBatch` without `--rig` or `--anim-w` → EXE `.vccpose` → `ManagedBatchSession.LoadPreparedPose` (hash, shape and PMX parity checks) → the same native Unity bakers. Invalid/unmatched caches are reevaluated with the built-in PMX evaluator. Target FK also follows this path. PMX settings' conversion button uses `VmdBatchConversionSession.ConvertPreparedPoseToClip`.
 
-## Direct .anim integration
+## Core fully managed offline curves
 
-1. Collect PMX/VMD paths and the target FBX or HPS rig. `VmdSourceFbxUtility.FindSourceFbx` resolves a selected GameObject to its source file.
-2. Build `VmdStandaloneAnimOptions` and `VmdStandaloneAnimJob` entries.
-3. Call `VmdStandaloneAnimConverter.ConvertBatch` once for the batch. The bridge passes `--anim-w` and the worker performs pose solving and `.anim` serialization.
-4. Import completed files under Assets with `AssetDatabase.ImportAsset`.
+`ConvertStandaloneMotions` → `VmdStandaloneAnimConverter.ConvertBatch` → EXE `--anim-w` with selected FBX/HPS rig, output kind and all settings → HPS calibrated pose pipeline → YAML `.anim` → Unity AssetDatabase import. The window reads scene selection and mapping on the main thread, but does not bake curves using Unity APIs in this branch.
 
-The worker loads Unity-HPS only in the `--anim-w` path. Direct conversion uses source-file skeleton data; export changes explicitly when the scene skeleton differs from that source.
+VMDCW's optional package-dispatch facade passes parameters to VMDCC's public Editor APIs by reflection. The main window assembly has no mandatory Core reference; the typed legacy curve bridge lives in a separately constrained integration assembly. .NET10 solver DLLs run in the external process.
 
-## Source locations
+## Unity API responsibilities
 
-| Role | Source |
-| --- | --- |
-| Target rig export | [VmdTargetRigExporter.cs](../../unity-package/com.verafirefly.vmdcc/Editor/VmdTargetRigExporter.cs) |
-| Humanoid calibration | [VmdHumanoidCalibrationExporter.cs](../../unity-package/com.verafirefly.vmdcc/Editor/VmdHumanoidCalibrationExporter.cs) |
-| Batch invocation | [VmdConverterCoreBridge.cs](../../unity-package/com.verafirefly.vmdcc/Editor/VmdConverterCoreBridge.cs) |
-| Pose worker | [VmdExternalPoseWorker.cs](../../unity-package/com.verafirefly.vmdcc/Editor/VmdExternalPoseWorker.cs) |
-| NLU integration | [VmdNluBatchPipeline.cs](../../unity-package/com.verafirefly.vmdcc/Editor.Nlu/VmdNluBatchPipeline.cs) |
-| Direct .anim invocation | [VmdStandaloneAnimConverter.cs](../../unity-package/com.verafirefly.vmdcc/Editor/VmdStandaloneAnimConverter.cs) |
-| FBX path resolution | [VmdSourceFbxUtility.cs](../../unity-package/com.verafirefly.vmdcc/Editor/VmdSourceFbxUtility.cs) |
-| Curve data contracts | [VmdTargetCurveData.cs](../../unity-package/com.verafirefly.vmdcc/Runtime/VmdTargetCurveData.cs) |
+GameObject/Animator/Avatar access, `HumanPoseHandler`, native calibration export, AnimationClip creation, `AnimationUtility` and `AssetDatabase` require Unity's Editor/runtime bindings and lifecycle. They cannot safely be called by the standalone .NET10 worker. Offline HPS reconstructs these curve conversions numerically; it does not load Unity assemblies. PMX parsing, IK, numerical retargeting, curve reduction and YAML serialization execute outside Unity.

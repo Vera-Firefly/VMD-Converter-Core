@@ -74,7 +74,7 @@ PMX/VMD 解析及 PMX IK → 源 Humanoid 编码 → 选定目标 rig 解码 →
 
 ## Unity 公开接口与调用链
 
-安装 `unity-package/com.verafirefly.vmdcc`。可另装 `com.verafirefly.vmdcw` 获得窗口及内置解析。任意 Editor 脚本可调用：
+安装 `unity-package/com.verafirefly.vmdcc`。任意 Editor 脚本可调用其公开接口：
 
 - `VmdExternalPoseWorker.PrepareBatch`：EXE 并行生成原始 PMX/IK 姿态，供 Unity 原生烘焙。
 - `VmdStandaloneAnimConverter.ConvertBatch`／`BuildCommandLine`：离线 HPS `.anim` 与对应命令。

@@ -75,7 +75,7 @@ Morph map: `{"mappings":[{"source":"smile","name":"Happy","path":"Body"}]}`. Unm
 
 ## Unity API and packages
 
-Install `unity-package/com.verafirefly.vmdcc`; install the optional `com.verafirefly.vmdcw` package for its conversion window and built-in parser. Other Editor scripts can call:
+Install `unity-package/com.verafirefly.vmdcc`. Editor scripts can call its public APIs:
 
 - `VmdExternalPoseWorker.PrepareBatch`: raw parallel PMX/IK pose files for native Unity baking.
 - `VmdStandaloneAnimConverter.ConvertBatch` / `BuildCommandLine`: offline HPS `.anim` conversion and reproducible arguments.

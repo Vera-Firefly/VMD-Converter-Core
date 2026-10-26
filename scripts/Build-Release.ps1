@@ -18,9 +18,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $repo "src/Modules/Hps/bin/Release/net10.0/$name") -Destination (Join-Path $publish $name) -Force
     }
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    foreach ($package in @('com.verafirefly.vmdcc','com.verafirefly.vmdcw')) {
-        Copy-Item -LiteralPath (Join-Path $repo "unity-package/$package") -Destination (Join-Path $destination $package) -Recurse
-    }
+    Copy-Item -LiteralPath (Join-Path $repo 'unity-package/com.verafirefly.vmdcc') -Destination (Join-Path $destination 'com.verafirefly.vmdcc') -Recurse
     $tools = Join-Path $destination 'com.verafirefly.vmdcc/Tools'
     foreach ($name in $binaries) {
         $source = Join-Path $publish $name
@@ -34,7 +32,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo 'examples/unity') -Destination (Join-Path $destination 'examples-unity') -Recurse
     foreach ($file in Get-ChildItem -LiteralPath $destination -Filter '*.md' -Recurse) {
         $text = [IO.File]::ReadAllText($file.FullName)
-        if ($file.DirectoryName -eq $destination) { $text = $text.Replace('examples/unity/','examples-unity/').Replace('unity-package/com.verafirefly.vmdcc','com.verafirefly.vmdcc').Replace('unity-package/com.verafirefly.vmdcw','com.verafirefly.vmdcw') }
+        if ($file.DirectoryName -eq $destination) { $text = $text.Replace('examples/unity/','examples-unity/').Replace('unity-package/com.verafirefly.vmdcc','com.verafirefly.vmdcc') }
         elseif ($file.DirectoryName -eq (Join-Path $destination 'examples-unity')) { $text = $text.Replace('../../unity-package/','../').Replace('../../README','../README') }
         elseif ($file.DirectoryName -eq (Join-Path $destination 'com.verafirefly.vmdcc')) { $text = $text.Replace('../../README','../README').Replace('../../examples/unity/','../examples-unity/') }
         [IO.File]::WriteAllText($file.FullName,$text)

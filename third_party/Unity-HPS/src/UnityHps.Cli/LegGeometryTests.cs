@@ -75,6 +75,26 @@ internal static class LegGeometryTests
                 $"leg geometry preserves seeded bend/roll and inactive arms across bent-to-straight poses and quaternion signs: left={left}");
             check(parallel.frames.Zip(serial.frames).All(p => p.First.humanPose.muscles.SequenceEqual(p.Second.humanPose.muscles)),
                 $"leg bend/roll sequence is deterministic across frame worker counts: left={left}");
+
+            // A target leg cannot reuse a source skeleton's periodic muscle
+            // branch as if it were a target chart coordinate. Exercise a real
+            // fit from neutral rather than only the exact-solution seed above.
+            var neutralSeeds = seeds.Select(values => values.Select((value, m) =>
+                active.Contains(rig.muscles[m].humanBone) ? 0 : value).ToArray()).ToArray();
+            var neutralFit = batchSolver.SolveBatch(batch, 4, 3, initialMuscles: neutralSeeds);
+            var neutralSerial = batchSolver.SolveBatch(batch, 1, 3, initialMuscles: neutralSeeds);
+            var decoded = neutralFit.frames.Select(f => decoder.Decode(f.humanPose.muscles, f.humanPose)).ToArray();
+            check(decoded.Select((pose, i) =>
+                Vector3.Distance(pose.WorldPositions[foot], new SkeletonPose(rig, frames[i]).WorldPositions[foot]) < .001f &&
+                Math3.Angle(pose.WorldRotations[foot], new SkeletonPose(rig, frames[i]).WorldRotations[foot]) < .2f).All(x => x),
+                $"neutral target-leg seed fits bent-to-straight endpoints and foot orientation: left={left}");
+            check(decoded.Zip(decoded.Skip(1)).All(pair =>
+                Math3.Angle(pair.First.LocalRotations[upper], pair.Second.LocalRotations[upper]) < 45) &&
+                neutralFit.frames.Zip(neutralSerial.frames).All(pair =>
+                    pair.First.humanPose.muscles.SequenceEqual(pair.Second.humanPose.muscles)) &&
+                neutralFit.frames.Select((frame, i) => frame.humanPose.muscles.Select((value, m) =>
+                    active.Contains(rig.muscles[m].humanBone) || value == neutralSeeds[i][m]).All(x => x)).All(x => x),
+                $"neutral target-leg fits stay continuous, preserve inactive channels and are worker-independent: left={left}");
         }
     }
 }

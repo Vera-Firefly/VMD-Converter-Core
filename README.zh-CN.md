@@ -52,7 +52,7 @@ PMX/VMD 解析及 PMX IK → 源 Humanoid 编码 → 选定目标 rig 解码 →
 | `--sample-rate`、`--position-scale` | 30 fps；0.08 米/PMX单位 |
 | `--coordinate` | 默认 2；0 翻转 Z，1 翻转 X，2 绕 Y180，3 不转换 |
 | `--passes`、`--range-policy` | 默认 3；`tangent` 或 `strict` |
-| `--leg-fit` | `auto`：原生位移补偿标定用几何拟合，纯 FBX 用旋转拟合；可指定 `geometry`／`rotation` |
+| `--leg-fit` | `auto`／`geometry`：拟合目标膝、踝方向及足部姿态；`rotation`：拟合局部旋转 |
 | `--fk-continuity`、`--target-leg-ik` | 默认 true／false |
 | `--curve-error` | 肌肉压缩误差 0.00001，0 保留全部关键帧 |
 | `--rotation-error`、`--position-error` | FK 压缩误差：0.01 度、0.00005 米 |

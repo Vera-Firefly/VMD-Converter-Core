@@ -20,7 +20,7 @@ VmdStandaloneAnimConverter.ConvertBatch(options, new[] {
 });
 ```
 
-Output kinds: `humanoid-ik`, `target-humanoid`, `target-fk`, and `-all` / `-arm` / `-leg` variants for both target types. Normal target modes retain the leg policy. All fits the whole target; arm fits target upper limbs. Every mode writes a complete animation. Humanoid IK retargets the source pose when a target rig is explicit; it does not enable target limb reconstruction. Automatic leg fitting uses geometry for native compensation calibration and rotation for portable FBX rigs.
+Output kinds: `humanoid-ik`, `target-humanoid`, `target-fk`, and `-all` / `-arm` / `-leg` variants for both target types. Normal target modes retain the leg policy. All fits the whole target; arm fits target upper limbs. Every mode writes a complete animation. Humanoid IK retargets the source pose when a target rig is explicit; it does not enable target limb reconstruction. Automatic target-leg fitting uses knee/foot directions and foot orientation, starting in the target neutral muscle chart. Source-only and arm-only modes retain their source leg channels.
 
 Offline curves require HPS. Keep all five binaries in Tools: EXE, Shared, Hps, UnityHps.Core and UnityHps.Fbx, with disabled Unity plugin importers. Run `--help` for arguments. Explicit FBX/HPS targets never fall back; target modes require one. Legacy `--rig` and HPS `--hps-rig` use different schemas.
 

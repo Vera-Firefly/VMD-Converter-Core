@@ -24,7 +24,7 @@ VmdStandaloneAnimConverter.ConvertBatch(options, new[] {
 
 ## 模式与运行文件
 
-支持 `humanoid-ik`、`target-humanoid`、`target-fk` 及两种 target 输出的 `-all`／`-arm`／`-leg`。普通 target 采用下肢策略；all 整身目标拟合，arm 仅目标上肢拟合，输出仍为完整动作。Humanoid IK 有明确目标时重定向源姿态，不隐式启用目标肢体重解；目标下肢的 auto 策略按 rig 标定类型选择几何或旋转拟合。
+支持 `humanoid-ik`、`target-humanoid`、`target-fk` 及两种 target 输出的 `-all`／`-arm`／`-leg`。普通 target 采用下肢策略；all 整身目标拟合，arm 仅目标上肢拟合，输出仍为完整动作。Humanoid IK 有明确目标时重定向源姿态，不隐式启用目标肢体重解；目标下肢 auto 策略从目标中立肌肉坐标拟合膝、踝方向及足部姿态。源姿态与仅目标上肢模式保留源下肢通道。
 
 离线曲线必须有 HPS。保留 Tools 中 EXE、Shared、Hps、UnityHps.Core、UnityHps.Fbx 共五个二进制及其禁用 Unity 插件加载的 `.meta`。EXE 接受 `--help`。明确填写 FBX 或 HPS rig 时不得回退；全部 target 模式必须有目标。旧 `--rig` 与 HPS `--hps-rig` 是不同协议。
 

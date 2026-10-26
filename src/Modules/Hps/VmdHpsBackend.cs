@@ -81,7 +81,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
             var selected=rig.muscles.Where(m=>region==VmdTargetSolveRegion.All ||
                 region==VmdTargetSolveRegion.Arm&&IsUpper(m.humanBone) ||
                 region==VmdTargetSolveRegion.Leg&&!IsUpper(m.humanBone)).Select(m=>m.humanBone).ToHashSet();
-            bool geometry=options.LegFit switch {"auto"=>nativeCalibration,"geometry"=>true,"rotation"=>false,_=>throw new ArgumentException("Unknown leg fitting policy")};
+            bool geometry=options.LegFit switch {"auto"=>true,"geometry"=>true,"rotation"=>false,_=>throw new ArgumentException("Unknown leg fitting policy")};
             solver=new HumanoidSolver(rig,selected,policy){FitDecodedArmContext=true,FitLegGeometry=geometry,AnchorLimbTwistToInitial=true,ReconstructDecodedRoot=true};
             decoder=new HumanoidSolver(rig,rangePolicy:policy);
             sourceSolver=new HumanoidSolver(sourceRig,sourceRig.muscles.Where(m=>m.humanBone is <11 or >18).Select(m=>m.humanBone).ToHashSet(),policy)
@@ -106,7 +106,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 outputKind=options.OutputKind,bakeMorphs=options.BakeMorphs,
                 humanoid=new VmdHumanoidCalibrationData{muscles=rig.muscles.Select(m=>new VmdMuscleCalibration{property=MuscleProperty(m.name)}).ToArray()},
                 morphs=legacy?.morphs??rig.morphs.Select(m=>new VmdTargetMorphBinding{name=m.name,path=m.path}).ToArray()};
-            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|source-retarget-v2|"+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
+            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|source-retarget-target-leg-seed-v3|"+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
         }
 
         Rig RawSourceBind()
@@ -262,6 +262,13 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                     // Projection is an optimizer estimate, not a final muscle constraint.
                     // Keep the original goal and start its fit inside the solver domain.
                     seed=solver.CreateFitSeed(targetUpper.Project(goal,seed));
+                // PMX muscle coordinates are valid for source retargeting, but
+                // can use a remote periodic branch (including tangent limits).
+                // They are not target-leg optimizer coordinates. Start only
+                // the selected leg channels in the target's neutral chart;
+                // preserve all source channels outside that target solve.
+                if(region is VmdTargetSolveRegion.All or VmdTargetSolveRegion.Leg)
+                    for(int m=0;m<seed.Length;m++)if(rig.muscles[m].humanBone is >=1 and <=6)seed[m]=0;
                 frames[frame]=goal;seeds[frame]=seed;
             });
             ResultBatch fitted=solver.SolveBatch(new PoseBatch{frames=frames},threads,options.Passes,scheduler,seeds);

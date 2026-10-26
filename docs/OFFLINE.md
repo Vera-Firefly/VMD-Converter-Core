@@ -47,7 +47,7 @@ Files share the parsed model, rig and response data. `--threads` controls the to
 | `--sample-rate`, `--position-scale`, `--coordinate` | 30 fps, 0.08 metres/PMX unit, 2 (Y180) |
 | `--coordinate` | 0: flip Z; 1: flip X; 2: Y180; 3: identity |
 | `--passes`, `--range-policy` | 3 fitting passes; `tangent` or `strict` |
-| `--leg-fit` | `auto`: geometry for native compensation calibration, rotation for portable FBX; explicit `geometry`/`rotation` overrides |
+| `--leg-fit` | `auto`/`geometry`: target knee and foot directions plus foot orientation; `rotation`: local-rotation fitting |
 | `--fk-continuity`, `--target-leg-ik` | true / false |
 | `--curve-error` | Muscle reduction tolerance 0.00001; zero keeps all keys |
 | `--rotation-error`, `--position-error` | FK reduction: 0.01 degrees / 0.00005 metres |

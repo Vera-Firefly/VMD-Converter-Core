@@ -462,7 +462,7 @@ internal static class Program
           --coordinate n         0=flip Z, 1=flip X, 2=Y180 (default), 3=identity
           --passes n             Default 3; 1..20
           --range-policy policy  tangent (default) or strict calibrated range
-          --leg-fit policy       auto (native calibration: geometry; FBX: rotation), rotation, geometry
+          --leg-fit policy       auto (target leg geometry), rotation, geometry
           --fk-continuity bool   Source-guided equivalent FK branch selection; default true
           --target-leg-ik bool   Additional target IK; default false
           --curve-error n        Muscle reduction tolerance; default 0.00001; 0 keeps all keys

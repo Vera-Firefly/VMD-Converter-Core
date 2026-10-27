@@ -161,7 +161,7 @@ namespace UnityHps.Reference
                     handler.SetHumanPose(ref zero);
                     var groups = new List<GroupData>();
                     var byBone = Enumerable.Range(0, HumanTrait.MuscleCount)
-                        .Where(m => humanIndices.ContainsKey(HumanTrait.BoneFromMuscle(m)))
+                        .Where(m => HumanTrait.BoneFromMuscle(m) >= 0)
                         .GroupBy(HumanTrait.BoneFromMuscle);
                     foreach (var group in byBone)
                     {
@@ -192,8 +192,9 @@ namespace UnityHps.Reference
                                     affected.Add(b);
                         }
                         int[] observed = affected.OrderBy(b => b).ToArray();
-                        groups.Add(new GroupData { muscles = channels, bones = observed, resolution = resolution,
-                            samples = raw.Select(s => Subset(s, observed, channels)).ToArray() });
+                        if(observed.Length>0)
+                            groups.Add(new GroupData { muscles = channels, bones = observed, resolution = resolution,
+                                samples = raw.Select(s => Subset(s, observed, channels)).ToArray() });
                         Debug.Log("HPS calibrated " + HumanTrait.BoneName[group.Key] + ": " + count + " samples, " + observed.Length + " affected bones");
                     }
                     rig.groups = groups.ToArray();

@@ -72,7 +72,7 @@ public static class AvatarDescriptorIO
     public static Rig BuildHumanoidRig(AvatarDescriptor descriptor, string? profilePath = null)
     {
         Rig rig = descriptor.calibratedRig ??
-            OfflineRigFactory.FromSkeleton(descriptor.skeleton, profilePath);
+            OfflineRigFactory.FromSkeleton(descriptor.skeleton, profilePath, HumanoidResponseTransport.AnatomicalTargets);
         rig.precision = descriptor.calibratedRig == null
             ? "descriptor-" + descriptor.provenance + "-unproven"
             : "descriptor-unity-" + descriptor.expectedAccuracy;

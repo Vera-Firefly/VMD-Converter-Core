@@ -149,6 +149,8 @@ internal static class SelfTests
         BodyMassCalibrationTests.Run(Check);
         ArmContextTests.Run(Check);
         LegGeometryTests.Run(Check);
+        RigTransportTests.Run(Check);
+        TorsoTransportTests.Run(Check);
         UpperProjectionTests.Run(Check);
         RangePolicyTests.Run(Check);
         FkBranchTests.Run(Check);

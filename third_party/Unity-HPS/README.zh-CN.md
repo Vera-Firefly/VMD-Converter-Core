@@ -36,6 +36,7 @@ PoseFrame local = solver.Decode(result.frames[0].humanPose.muscles,
 ```
 
 - `OfflineRigFactory.FromFbx`、`FbxReader.Read`：离线骨架、映射与形态键。
+- FBX 和描述文件的目标 rig 使用 `HumanoidResponseTransport.AnatomicalTargets`：下肢联动响应按所属肢段传递，躯干沿下一已映射的躯干骨骼定向，肩部与踝部采用重力稳定的水平朝向；Chest 已映射且 UpperChest 未映射时，其通道作用于 Chest。已有骨架可调用 `OfflineRigFactory.FromSkeleton(document, profilePath, HumanoidResponseTransport.AnatomicalTargets)`。`AnatomicalLegs` 保留此前仅调整下肢的规则。双参数 `FromSkeleton`、`Transfer` 保留 `JointFrames`，供源姿态编码使用；读取 HPS rig JSON 时保留其中的响应数据。
 - `HumanoidSolver.Solve`、`SolveBatch`、`SolveMuscles`、`Decode`：姿态／曲线转换，可选活动 HumanBone 分组和初始肌肉。
 - `ReconstructRoot`：外部修改肌肉后重算根运动。`FitDecodedArmContext` 在解码后的躯干和肩坐标中求手臂；`FitLegGeometry` 启用几何下肢拟合；`AnchorLimbTwistToInitial` 添加初始扭转软约束。
 - `HumanoidUpperProjector.Project`：源／目标上肢解剖投影，返回独立肌肉数组，不改动未选择通道。

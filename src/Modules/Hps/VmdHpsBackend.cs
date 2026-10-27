@@ -166,7 +166,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                     position=Math3.A(Math3.Rotate(Q.Inverse(parentRotation),new V(world.x-parentPosition.x,world.y-parentPosition.y,world.z-parentPosition.z))),rotation=Math3.A(Q.Inverse(parentRotation)*rotation)});
             }
             for(int i=0;i<old.Length;i++)Add(i);
-            Rig rig=OfflineRigFactory.FromSkeleton(new FbxDocument{source="legacy VMDCC bindings",bones=bones.ToArray(),morphs=legacy.morphs.Select(m=>new MorphBinding{name=m.name,path=m.path}).ToArray()});
+            Rig rig=OfflineRigFactory.FromSkeleton(new FbxDocument{source="legacy VMDCC bindings",bones=bones.ToArray(),morphs=legacy.morphs.Select(m=>new MorphBinding{name=m.name,path=m.path}).ToArray()},null,HumanoidResponseTransport.AnatomicalTargets);
             return rig;
         }
 

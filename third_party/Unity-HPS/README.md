@@ -36,6 +36,7 @@ PoseFrame local = solver.Decode(result.frames[0].humanPose.muscles,
 ```
 
 - `OfflineRigFactory.FromFbx`, `FbxReader.Read`: offline skeleton, mappings and morphs.
+- FBX and descriptor target rigs use `HumanoidResponseTransport.AnatomicalTargets`: coupled leg responses follow their owning segment; torso frames follow the next mapped torso link; shoulder and ankle axes use gravity-stable heading. When Chest is mapped, unmapped UpperChest channels delegate to it. For an existing skeleton, select it with `OfflineRigFactory.FromSkeleton(document, profilePath, HumanoidResponseTransport.AnatomicalTargets)`. `AnatomicalLegs` retains the earlier leg-only transport. The two-argument `FromSkeleton` and `Transfer` overloads retain `JointFrames` for source-pose encoding. Serialized HPS rigs keep their supplied responses.
 - `HumanoidSolver.Solve`, `SolveBatch`, `SolveMuscles`, `Decode`: pose/curve conversion, optional active human-bone groups and initial muscles.
 - `HumanoidSolver.ReconstructRoot`: root fitting after external muscle edits. `FitDecodedArmContext` fits arms under the decoded shoulder/body context; `FitLegGeometry` selects geometry-aware leg fitting. `AnchorLimbTwistToInitial` adds a soft initial twist prior.
 - `HumanoidUpperProjector.Project`: anatomical source/target upper projection; returns a new muscle array and preserves unselected channels.

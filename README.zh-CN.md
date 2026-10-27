@@ -27,7 +27,7 @@ VMDCC 是 Windows x64 PMX/VMD 转换程序及 Unity 接入包，负责 PMX 骨�
 | `target-humanoid-arm`、`target-fk-arm` | 目标上肢；保留源 Humanoid 躯干和下肢 |
 | `target-humanoid-all`、`target-fk-all` | 目标全身，包括目标上肢反解 |
 
-Humanoid 输出 RootT、RootQ、肌肉曲线；FK 按目标路径输出局部旋转及必要的位移。模式后缀决定目标拟合区域，输出仍为整段全身动作。FK 连续性处理参考源动作选择等效轴向分支，保持手腕方向，不通过肌肉标量取模消除跳变。
+Humanoid 输出 RootT、RootQ、肌肉曲线；FK 按目标路径输出局部旋转及必要的位移。模式后缀决定目标拟合区域，输出仍为整段全身动作。FK 连续性处理参考源动作选择等效轴向分支，保持手腕方向，不通过肌肉标量取模消除跳变。 FBX 与描述文件的目标 rig 按所属肢段传递下肢联动响应，踝部俯仰与侧倾使用 Avatar 水平朝向，不要求映射 Toes。躯干按下一已映射躯干骨骼定向，跨越缺失的 UpperChest；有 Chest 时未映射 UpperChest 的通道仍作用于 Chest，肩部采用水平朝向。已有 HPS rig JSON 保留其响应数据。
 
 ## 求解流程
 

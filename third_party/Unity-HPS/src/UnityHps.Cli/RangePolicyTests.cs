@@ -30,6 +30,12 @@ internal static class RangePolicyTests
         check(rejected, "optimizer seed preparation rejects nonfinite estimates");
         Rig profile = OfflineRigFactory.LoadProfile(false);
         var decoder = new HumanoidSolver(profile, rangePolicy: HumanoidRangePolicy.Tangent);
+        var shoulder=new float[profile.muscles.Length];shoulder[38]=4.05617762f;
+        check(float.IsFinite(decoder.Decode(shoulder).LocalRotations[profile.hips].W) && shoulder[38]>4,
+            "tangent shoulder accepts a finite 60.84-degree projected pose without clipping");
+        bool shoulderRejected=false;shoulder[38]=12.01f;
+        try{decoder.Decode(shoulder);}catch(InvalidDataException){shoulderRejected=true;}
+        check(shoulderRejected,"extended shoulder evaluation retains its physical-angle bound");
         var a = new float[profile.muscles.Length]; var b = new float[a.Length];
         a[50] = -.1f; b[50] = 3.9f;
         var pa = decoder.Decode(a); var pb = decoder.Decode(b);

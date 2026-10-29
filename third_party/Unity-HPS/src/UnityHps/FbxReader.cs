@@ -14,6 +14,14 @@ public sealed class FbxDocument
     public MorphBinding[] morphs { get; set; } = [];
     public bool usedUnityMeta { get; set; }
     public float unitScale { get; set; } = 1;
+    public FbxMuscleLimit[] customMuscleLimits { get; set; } = [];
+}
+public sealed class FbxMuscleLimit
+{
+    public int humanBone { get; set; } = -1;
+    public float[] minimum { get; set; } = [];
+    public float[] maximum { get; set; } = [];
+    public float[] center { get; set; } = [0,0,0];
 }
 public sealed class MorphBinding
 {
@@ -71,8 +79,8 @@ public static class FbxReader
             var meta = metaPath == null ? new UnityFbxMeta() : UnityFbxMeta.Read(metaPath);
             if (meta.HasCustomMuscleLimits)
             {
-                string warning = "FBX metadata contains custom Humanoid muscle limits. Conversion continues with default profile limits; " +
-                    "accuracy for these settings is unverified. Use an exported --hps-rig for Avatar-specific responses.";
+                string warning = "FBX metadata contains custom Humanoid muscle limits. Anatomical target rigs apply supported zero-center shoulder limits; " +
+                    "other settings retain default profile limits. Use an exported --hps-rig for Avatar-specific responses.";
                 if (options.Warning != null) options.Warning(warning);
                 else Console.Error.WriteLine("Warning: " + warning);
             }
@@ -146,7 +154,7 @@ public static class FbxReader
                 if (name.Length > 0) morphs.Add(new MorphBinding { name = name, path = PathFor(hps_fbx_morph_node(scene, i)) });
             }
             return new FbxDocument { source = Path.GetFullPath(path), bones = bones, morphs = morphs.ToArray(), usedUnityMeta = metaPath != null,
-                unitScale = options.Scale * meta.GlobalScale };
+                unitScale = options.Scale * meta.GlobalScale, customMuscleLimits=meta.CustomMuscleLimits.ToArray() };
         }
         finally { hps_fbx_free(scene); }
     }
@@ -159,6 +167,7 @@ internal sealed class UnityFbxMeta
     public Dictionary<string, Rest> Skeleton { get; } = new(StringComparer.Ordinal);
     public float GlobalScale { get; private set; } = 1;
     public bool HasCustomMuscleLimits { get; private set; }
+    public List<FbxMuscleLimit> CustomMuscleLimits { get; } = [];
     private static float[] Components(string text) => Regex.Matches(text, @"[xyzw]:\s*([-+\d.eE]+)")
         .Select(m => float.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)).ToArray();
     public static UnityFbxMeta Read(string path)
@@ -168,18 +177,31 @@ internal sealed class UnityFbxMeta
         var scaleMatch = Regex.Match(text, @"(?m)^    globalScale:\s*([-+\d.eE]+)");
         if (scaleMatch.Success) result.GlobalScale = float.Parse(scaleMatch.Groups[1].Value, CultureInfo.InvariantCulture);
         bool human = false, skeleton = false; string? boneName = null, restName = null;
+        string? humanName=null;float[] minimum=[],maximum=[],center=[0,0,0];bool modified=false;
+        void SaveLimit()
+        {
+            if(modified && humanName!=null && UnityHps.HumanBones.TryGetId(humanName,out int id))
+                result.CustomMuscleLimits.Add(new FbxMuscleLimit{humanBone=id,minimum=minimum,maximum=maximum,center=center});
+            humanName=null;minimum=[];maximum=[];center=[0,0,0];modified=false;
+        }
         Vector3 p = Vector3.Zero; Quaternion q = Quaternion.Identity;
         foreach (string line in text.Split('\n'))
         {
             string trimmed = line.Trim();
             if (trimmed == "human:") { human = true; skeleton = false; continue; }
-            if (trimmed == "skeleton:") { human = false; skeleton = true; continue; }
+            if (trimmed == "skeleton:") { SaveLimit(); human = false; skeleton = true; continue; }
             if (human)
             {
-                if (trimmed.StartsWith("- boneName: ")) boneName = trimmed[12..].Trim('"');
+                if (trimmed.StartsWith("- boneName: ")) { SaveLimit();boneName = trimmed[12..].Trim('"'); }
                 if (trimmed.StartsWith("humanName: ") && boneName != null)
-                    result.HumanBones[trimmed[11..].Trim('"').Replace(" ", string.Empty)] = boneName;
-                if (trimmed == "modified: 1") result.HasCustomMuscleLimits = true;
+                {
+                    humanName=trimmed[11..].Trim('"').Replace(" ", string.Empty);
+                    result.HumanBones[humanName] = boneName;
+                }
+                if(trimmed.StartsWith("min:"))minimum=Components(trimmed);
+                if(trimmed.StartsWith("max:"))maximum=Components(trimmed);
+                if(trimmed.StartsWith("value:"))center=Components(trimmed);
+                if (trimmed == "modified: 1") { result.HasCustomMuscleLimits = true; modified=true; }
             }
             if (!skeleton) continue;
             if (trimmed.StartsWith("- name: ")) { restName = trimmed[8..].Trim('"'); p = Vector3.Zero; q = Quaternion.Identity; }
@@ -194,7 +216,7 @@ internal sealed class UnityFbxMeta
             }
             else if (!line.StartsWith("    ") && trimmed.Length > 0) skeleton = false;
         }
-        return result;
+        SaveLimit();return result;
     }
 }
 

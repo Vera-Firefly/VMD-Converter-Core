@@ -43,6 +43,13 @@ public sealed partial class HumanoidSolver
                 muscleLimits[group.muscles[d]] = rangePolicy == HumanoidRangePolicy.Tangent
                     ? Math.Max(4f, group.muscleRanges.Length == 0 ? 1f : group.muscleRanges[d])
                     : group.muscleRanges.Length == 0 ? 1f : group.muscleRanges[d];
+        if(rangePolicy==HumanoidRangePolicy.Tangent)
+            for(int i=0;i<rig.muscles.Length;i++)
+            {
+                var m=rig.muscles[i];
+                if(m.humanBone is 11 or 12 && m.dof is 1 or 2 && m.minimum<0 && m.maximum>0)
+                    muscleLimits[i]=Math.Max(muscleLimits[i],180f/Math.Max(-m.minimum,m.maximum));
+            }
         neutral = new SkeletonPose(rig);
         reverseComposition = Enumerable.Range(0, rig.bones.Length).Select(rig.reverseCompositionBones.Contains).ToArray();
         foreach (var group in rig.groups)
@@ -128,6 +135,18 @@ public sealed partial class HumanoidSolver
                 group.muscleRanges.Any(v => !float.IsFinite(v) || v <= 0) ||
                 group.samples.Length != (int)Math.Pow(size, n))
                 throw new InvalidDataException("Invalid muscle lattice.");
+            if(group.shoulderSwingAxes.Length!=0 && (n!=2 || group.bones.Length!=1 ||
+                rig.bones[group.bones[0]].humanBone is not (11 or 12) || group.shoulderSwingAxes.Length!=6 ||
+                group.shoulderSwingAxes.Any(v=>!float.IsFinite(v)) ||
+                Math.Abs(Math3.V(group.shoulderSwingAxes).LengthSquared()-1)>.001f ||
+                Math.Abs(Math3.V(group.shoulderSwingAxes,3).LengthSquared()-1)>.001f ||
+                Math.Abs(Vector3.Dot(Math3.V(group.shoulderSwingAxes),Math3.V(group.shoulderSwingAxes,3)))>.001f ||
+                group.muscles.Select(m=>rig.muscles[m].dof).Distinct().Count()!=2 ||
+                group.muscles.Any(m=>rig.muscles[m].humanBone!=rig.bones[group.bones[0]].humanBone ||
+                    rig.muscles[m].dof is not (1 or 2) ||
+                    !float.IsFinite(rig.muscles[m].minimum)||!float.IsFinite(rig.muscles[m].maximum)||
+                    rig.muscles[m].minimum>=0||rig.muscles[m].maximum<=0)))
+                throw new InvalidDataException("Invalid analytic shoulder response.");
             foreach (var sample in group.samples)
             {
                 if (sample.positions.Length != group.bones.Length * 3 || sample.rotations.Length != group.bones.Length * 4)
@@ -143,9 +162,11 @@ public sealed partial class HumanoidSolver
     /// <summary>Evaluate the calibrated neutral-body pose within the sampled muscle ranges.</summary>
     public SkeletonPose Decode(float[] muscles, HumanPose? root = null)
     {
-        if (muscles.Length != rig.muscles.Length ||
-            muscles.Where((m, i) => !float.IsFinite(m) || Math.Abs(m) > muscleLimits[i]).Any())
-            throw new InvalidDataException("Muscles must match the rig and lie within the selected evaluation ranges.");
+        if (muscles.Length != rig.muscles.Length)
+            throw new InvalidDataException("Muscle count must match the rig.");
+        for(int i=0;i<muscles.Length;i++)
+            if(!float.IsFinite(muscles[i]) || Math.Abs(muscles[i])>muscleLimits[i])
+                throw new InvalidDataException($"Muscle {i} ({rig.muscles[i].name}) is {muscles[i]:G9}; allowed range is +/-{muscleLimits[i]:G9} under {RangePolicy} policy.");
         var pose = new SkeletonPose(rig);
         foreach (var group in rig.groups)
         {
@@ -533,6 +554,14 @@ public sealed partial class HumanoidSolver
 
     private void Interpolate(MuscleGroup group,float[] values,out Quaternion[] rotations,out Vector3[] positions)
     {
+        if(group.shoulderSwingAxes.Length!=0)
+        {
+            double Degrees(int d){var m=rig.muscles[group.muscles[d]];return (double)values[d]*(values[d]<0?-m.minimum:m.maximum);}
+            var center=group.samples[(group.samples.Length-1)/2];
+            rotations=[ShoulderSwingResponse.Evaluate(Math3.Q(center.rotations),group.shoulderSwingAxes,Degrees(0),Degrees(1))];
+            positions=[Math3.V(center.positions)];
+            return;
+        }
         if (RangePolicy == HumanoidRangePolicy.Strict)
         {
             InterpolateWithin(group,values,out rotations,out positions);

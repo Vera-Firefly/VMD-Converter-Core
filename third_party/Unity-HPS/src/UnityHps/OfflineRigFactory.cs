@@ -75,7 +75,7 @@ public static class OfflineRigFactory
         bool targetFrames=transport==HumanoidResponseTransport.AnatomicalTargets;
         var alignments = targetByHuman.Where(p=>sourceByHuman.ContainsKey(p.Key)).ToDictionary(
             p=>p.Value,p=>JointFrameCore(targetBind,p.Value,targetFrames)*Quaternion.Inverse(JointFrameCore(sourceBind,sourceByHuman[p.Key],targetFrames)));
-        Quaternion footHeading = transport != HumanoidResponseTransport.JointFrames
+        Quaternion headingAlignment = transport != HumanoidResponseTransport.JointFrames
             ? Heading(targetBind)*Quaternion.Inverse(Heading(sourceBind)) : Quaternion.Identity;
         Quaternion ConvertLocal(int source, int dest, Quaternion local, Quaternion? responseAlignment = null)
         {
@@ -88,7 +88,13 @@ public static class OfflineRigFactory
         }
         foreach (var pair in targetByHuman)
             if (sourceByHuman.TryGetValue(pair.Key,out int src) && pair.Key!=0)
-                target.bones[pair.Value].rotation=Math3.A(ConvertLocal(src,pair.Value,Math3.Q(profile.bones[src].rotation)));
+            {
+                // Neutral leg flexion is defined in the Avatar heading frame.
+                // A lateral bind offset must not tilt the neutral bend axis;
+                // variable twist responses still follow their owning segment.
+                Quaternion? neutralAlignment=targetFrames && pair.Key is >=1 and <=4 ? headingAlignment : null;
+                target.bones[pair.Value].rotation=Math3.A(ConvertLocal(src,pair.Value,Math3.Q(profile.bones[src].rotation),neutralAlignment));
+            }
         var groups=new List<MuscleGroup>();
         foreach (var group in profile.groups)
         {
@@ -99,7 +105,7 @@ public static class OfflineRigFactory
             int[] bones=slots.Select(i=>targetByHuman[profile.bones[group.bones[i]].humanBone]).ToArray();
             bool legResponse = transport != HumanoidResponseTransport.JointFrames && owner is >= 1 and <= 6;
             Quaternion? responseAlignment = !legResponse ? null : owner is 5 or 6
-                ? footHeading : alignments[targetByHuman[owner]];
+                ? headingAlignment : alignments[targetByHuman[owner]];
             // A shared limb response may rotate both a segment and its child.
             // Transport all of that response in the owner's frame, then rebase
             // at the existing neutral pose so a zero muscle stays neutral.
@@ -124,6 +130,7 @@ public static class OfflineRigFactory
             !groups.Any(g=>g.muscles.Any(m=>target.muscles[m].unityIndex is >=6 and <=8)))
             AddVirtualUpperChest(target,profile,groups,targetBind,targetByHuman[8]);
         target.groups=groups.ToArray();
+        if(targetFrames)ShoulderSwingResponse.Configure(target,document.customMuscleLimits);
         target.reverseCompositionBones=profile.reverseCompositionBones.Select(i=>profile.bones[i].humanBone)
             .Where(targetByHuman.ContainsKey).Select(h=>targetByHuman[h]).ToArray();
         target.bodyPositionWeights=new float[bind.Length];

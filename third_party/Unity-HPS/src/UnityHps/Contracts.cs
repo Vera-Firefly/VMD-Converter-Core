@@ -54,6 +54,9 @@ public sealed class MuscleGroup
     public float[] muscleRanges { get; set; } = [];
     // Uniform [-muscleRanges,+muscleRanges] lattice; dimension zero varies fastest.
     public LatticeSample[] samples { get; set; } = [];
+    // Optional analytic two-axis shoulder swing, in neutral local coordinates.
+    // Empty retains the measured lattice, including all existing calibrated rigs.
+    public float[] shoulderSwingAxes { get; set; } = [];
 }
 
 public sealed class LatticeSample

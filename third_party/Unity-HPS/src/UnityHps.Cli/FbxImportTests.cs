@@ -44,8 +44,12 @@ internal static class FbxImportTests
                 warnings.Count == 1 && warnings[0].Contains("default profile limits"),
                 "custom FBX muscle settings warn once and retain the imported skeleton instead of terminating");
             warnings.Clear();
-            FbxReader.Read(path, new FbxImportOptions { IgnoreMeta = true, Warning = warnings.Add });
-            check(warnings.Count == 0, "ignored FBX metadata does not emit a custom-limit warning");
+            File.AppendAllText(path+".meta", "\n    - boneName: Shoulder.L\n      humanName: LeftShoulder\n      limit:\n        min: {x: 0, y: -15, z: -5}\n        max: {x: 0, y: 15, z: 30}\n        value: {x: 0, y: 0, z: 0}\n        modified: 1\n    skeleton:\n");
+            var custom=FbxReader.Read(path);
+            check(custom.customMuscleLimits.Any(l=>l.humanBone==11 && l.minimum.SequenceEqual(new float[]{0,-15,-5}) && l.maximum.SequenceEqual(new float[]{0,15,30}) && l.center.All(v=>v==0)),
+                "FBX metadata reads all custom shoulder limit coordinates at the skeleton boundary");
+            var ignored=FbxReader.Read(path, new FbxImportOptions { IgnoreMeta = true, Warning = warnings.Add });
+            check(warnings.Count == 0 && ignored.customMuscleLimits.Length==0, "ignored FBX metadata does not emit a custom-limit warning or import limits");
         }
         finally
         {

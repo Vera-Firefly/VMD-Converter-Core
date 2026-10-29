@@ -9,7 +9,7 @@
 
 The third command uses the PMX Humanoid rig. Any supplied `--fbx`, `--hps-rig` or `--descriptor` selects the target explicitly; an invalid target fails instead of falling back. FBX and HPS rig inputs are mutually exclusive. Adjacent FBX `.meta` files supply Unity bone mapping and importer settings. `--meta` overrides that file; `--bone-map` supplies an explicit mapping. All `target-*` modes require a target. An HPS rig preserves the calibration available in its JSON; offline FBX import uses portable Humanoid responses.
 
-Portable FBX target responses are not Avatar-specific calibration. Their accuracy warning does not stop conversion. Custom muscle limits in FBX metadata also warn and use profile limits; use an exported `--hps-rig` for measured Avatar responses. Invalid input data and unsupported affine bone scales remain errors.
+Portable FBX target responses are not Avatar-specific calibration. Their accuracy warning does not stop conversion. FBX metadata applies asymmetric shoulder limits with zero centers when the response profile supports coupled shoulder swing. Other custom muscle limits retain profile defaults and emit a warning; use an exported `--hps-rig` for measured Avatar responses. Invalid input data and unsupported affine bone scales remain errors.
 
 ## Output modes
 
@@ -21,7 +21,7 @@ Portable FBX target responses are not Avatar-specific calibration. Their accurac
 | `target-humanoid-arm`, `target-fk-arm` | Target upper limb; source Humanoid body/legs |
 | `target-humanoid-all`, `target-fk-all` | Target whole body including upper-limb reconstruction |
 
-Humanoid writes RootT, RootQ and muscle curves. FK writes local rotations and necessary translations at target skeleton paths. FK continuity chooses equivalent axial branches using source motion and preserves wrist orientation; it does not smooth muscle values by wrapping them. Target modes export a whole animation; the suffix selects the region fitted to the target. FBX and descriptor target rigs transport coupled leg responses in the owning segment frame; ankle pitch/roll uses horizontal Avatar heading without requiring mapped Toes. Torso axes follow the next mapped torso link across an absent UpperChest; when Chest is mapped, UpperChest muscle channels still act on it. Shoulder axes use horizontal heading. Existing HPS rig JSON keeps its supplied responses.
+Humanoid writes RootT, RootQ and muscle curves. FK writes local rotations and necessary translations at target skeleton paths. FK continuity chooses equivalent axial branches using source motion and preserves wrist orientation; it does not smooth muscle values by wrapping them. Target modes export a whole animation; the suffix selects the region fitted to the target. FBX and descriptor target rigs use horizontal Avatar heading for neutral leg flexion and transport coupled leg responses in the owning segment frame; ankle pitch/roll uses horizontal Avatar heading without requiring mapped Toes. Torso axes follow the next mapped torso link across an absent UpperChest; when Chest is mapped, UpperChest muscle channels still act on it. Shoulder axes use horizontal heading. Existing HPS rig JSON keeps its supplied responses.
 
 ## Processing
 

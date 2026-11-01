@@ -6,8 +6,9 @@ using UnityHps;
 namespace UnityHps;
 
 /// <summary>Calibrated anatomical transport and upper-limb muscle projection. Inputs and model data remain owned by their callers.</summary>
-public sealed class HumanoidUpperProjector
+public sealed partial class HumanoidUpperProjector
 {
+    readonly Rig outputRig;
     readonly UpperModel model;
     readonly UpperProjection baseline;
     readonly Dictionary<int, int> bones;
@@ -20,6 +21,7 @@ public sealed class HumanoidUpperProjector
 
     public HumanoidUpperProjector(Rig rig, Rig? bindPose = null)
     {
+        outputRig = rig;
         var shared = Shared.Value;
         model = shared.model; residual = shared.residual; ranges = shared.ranges; count = shared.count;
         baseline = new UpperProjection(model);
@@ -129,9 +131,10 @@ public sealed class HumanoidUpperProjector
         return v;
     }
 
-    private double[] ProjectUpper(PoseFrame frame)
+    private double[] ProjectUpper(PoseFrame frame) => ProjectUpper(adapter.Map(frame));
+
+    private double[] ProjectUpper(double[] raw)
     {
-        double[] raw = adapter.Map(frame);
         var output = baseline.Solve(raw);
         for (int side = 0; side < 2; side++)
         {

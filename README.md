@@ -31,9 +31,9 @@ Humanoid writes RootT, RootQ and muscle curves. FK writes local rotations and ne
 
 ## Processing
 
-PMX/VMD evaluation and PMX IK → source Humanoid encoding → decode on the selected target → merge the selected target region → HPS upper projection and selected-region fitting → reconstruct root from the final muscles → reduce and write curves. FK additionally applies source-guided branch continuation. Body and shoulder context is fitted before dependent arm groups.
+PMX/VMD evaluation and PMX IK → source Humanoid encoding with ordered arm projection → decode on the selected target → merge the selected target region → HPS upper projection and selected-region fitting → continue fitted arm branches for all/arm → reconstruct root from the final muscles → reduce and write curves. FK additionally applies source-guided branch continuation. Body and shoulder context is fitted before dependent arm groups.
 
-Files share the parsed model, rig and response data. `--threads` controls the total frame-worker budget, `--job-threads` controls concurrent files, and `--memory-mb` limits estimated pose-cache reservations. The cache budget is not a process RSS cap.
+Files share the parsed model, rig and response data; ordered arm history is isolated per motion. `--threads` controls the total frame-worker budget, `--job-threads` controls concurrent files, and `--memory-mb` limits estimated pose-cache reservations. The cache budget is not a process RSS cap.
 
 ## Parameters
 

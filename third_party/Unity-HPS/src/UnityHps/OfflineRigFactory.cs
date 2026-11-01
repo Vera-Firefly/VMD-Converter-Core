@@ -53,6 +53,41 @@ public static class OfflineRigFactory
         Transfer(document, profile, HumanoidResponseTransport.JointFrames);
 
     public static Rig Transfer(FbxDocument document, Rig profile, HumanoidResponseTransport transport)
+        => Transfer(document,profile,transport,false);
+
+    /// <summary>
+    /// Create a Humanoid response rig for encoding an already constructed target
+    /// pose, preserving the original pose-transport rig. Only portable default
+    /// targets receive analytic arm responses; other calibrations are returned unchanged.
+    /// Bone ordering, bindings and unmodified body response groups are retained.
+    /// </summary>
+    public static Rig ForHumanoidEncoding(Rig poseRig,string? profilePath=null)
+    {
+        if(poseRig.precision!="offline-default-profile")return poseRig;
+        Rig profile=profilePath==null?LoadProfile(poseRig.bones.Any(b=>b.humanBone==54)):HpsJson.ReadRig(profilePath);
+        Rig response=Transfer(new FbxDocument{source=poseRig.source,bones=poseRig.bindBones},profile,
+            HumanoidResponseTransport.AnatomicalTargets,true);
+        if(response.bones.Length!=poseRig.bones.Length || response.bones.Where((b,i)=>
+            b.parent!=poseRig.bones[i].parent || b.humanBone!=poseRig.bones[i].humanBone).Any())
+            throw new InvalidDataException("Humanoid encoding skeleton differs from the target pose rig.");
+        var bones=poseRig.bones.Select(Clone).ToArray();
+        for(int i=0;i<bones.Length;i++)if(bones[i].humanBone is >=13 and <=18)
+            bones[i].rotation=(float[])response.bones[i].rotation.Clone();
+        var groups=poseRig.groups.Select(g=>poseRig.muscles[g.muscles[0]].humanBone is >=13 and <=18
+            ?response.groups.Single(r=>r.muscles.SequenceEqual(g.muscles)):g).ToArray();
+        var result=new Rig{version=poseRig.version,source=poseRig.source,humanScale=poseRig.humanScale,hips=poseRig.hips,
+            bones=bones,bindBones=poseRig.bindBones,morphs=poseRig.morphs,precision=poseRig.precision,
+            muscles=poseRig.muscles,groups=groups,bodyPosition=poseRig.bodyPosition,bodyRotation=poseRig.bodyRotation,
+            bodyPositionJacobian=poseRig.bodyPositionJacobian,bodyPositionWeights=poseRig.bodyPositionWeights,
+            bodyOrientationMode=poseRig.bodyOrientationMode,reverseCompositionBones=poseRig.reverseCompositionBones};
+        var neutral=new SkeletonPose(result);Vector3 center=Vector3.Zero;
+        for(int i=0;i<bones.Length;i++)center+=neutral.WorldPositions[i]*result.bodyPositionWeights[i];
+        result.bodyPosition=Math3.A(center/result.humanScale);
+        HumanoidSolver.Validate(result);
+        return result;
+    }
+
+    private static Rig Transfer(FbxDocument document,Rig profile,HumanoidResponseTransport transport,bool anatomicalArms)
     {
         if (!Enum.IsDefined(transport)) throw new ArgumentOutOfRangeException(nameof(transport));
         if (profile.bindBones.Length != profile.bones.Length || profile.bodyPositionWeights.Length != profile.bones.Length)
@@ -74,7 +109,7 @@ public static class OfflineRigFactory
         var targetBind = new SkeletonPose(new Rig { bones=bind });
         bool targetFrames=transport==HumanoidResponseTransport.AnatomicalTargets;
         var alignments = targetByHuman.Where(p=>sourceByHuman.ContainsKey(p.Key)).ToDictionary(
-            p=>p.Value,p=>JointFrameCore(targetBind,p.Value,targetFrames)*Quaternion.Inverse(JointFrameCore(sourceBind,sourceByHuman[p.Key],targetFrames)));
+            p=>p.Value,p=>JointFrameCore(targetBind,p.Value,targetFrames,anatomicalArms)*Quaternion.Inverse(JointFrameCore(sourceBind,sourceByHuman[p.Key],targetFrames,anatomicalArms)));
         Quaternion headingAlignment = transport != HumanoidResponseTransport.JointFrames
             ? Heading(targetBind)*Quaternion.Inverse(Heading(sourceBind)) : Quaternion.Identity;
         Quaternion ConvertLocal(int source, int dest, Quaternion local, Quaternion? responseAlignment = null)
@@ -92,7 +127,7 @@ public static class OfflineRigFactory
                 // Neutral leg flexion is defined in the Avatar heading frame.
                 // A lateral bind offset must not tilt the neutral bend axis;
                 // variable twist responses still follow their owning segment.
-                Quaternion? neutralAlignment=targetFrames && pair.Key is >=1 and <=4 ? headingAlignment : null;
+                Quaternion? neutralAlignment=targetFrames && (pair.Key is >=1 and <=4 || anatomicalArms && pair.Key is >=13 and <=18) ? headingAlignment : null;
                 target.bones[pair.Value].rotation=Math3.A(ConvertLocal(src,pair.Value,Math3.Q(profile.bones[src].rotation),neutralAlignment));
             }
         var groups=new List<MuscleGroup>();
@@ -103,7 +138,7 @@ public static class OfflineRigFactory
             int[] slots=Enumerable.Range(0,group.bones.Length).Where(i=>profile.bones[group.bones[i]].humanBone>0 && targetByHuman.ContainsKey(profile.bones[group.bones[i]].humanBone)).ToArray();
             if (slots.Length==0) continue;
             int[] bones=slots.Select(i=>targetByHuman[profile.bones[group.bones[i]].humanBone]).ToArray();
-            bool legResponse = transport != HumanoidResponseTransport.JointFrames && owner is >= 1 and <= 6;
+            bool legResponse = transport != HumanoidResponseTransport.JointFrames && owner is >= 1 and <= 6 || anatomicalArms && owner is >=13 and <=18;
             Quaternion? responseAlignment = !legResponse ? null : owner is 5 or 6
                 ? headingAlignment : alignments[targetByHuman[owner]];
             // A shared limb response may rotate both a segment and its child.
@@ -130,7 +165,11 @@ public static class OfflineRigFactory
             !groups.Any(g=>g.muscles.Any(m=>target.muscles[m].unityIndex is >=6 and <=8)))
             AddVirtualUpperChest(target,profile,groups,targetBind,targetByHuman[8]);
         target.groups=groups.ToArray();
-        if(targetFrames)ShoulderSwingResponse.Configure(target,document.customMuscleLimits);
+        if(targetFrames)
+        {
+            ShoulderSwingResponse.Configure(target,document.customMuscleLimits);
+            if(anatomicalArms)ArmResponse.Configure(target);
+        }
         target.reverseCompositionBones=profile.reverseCompositionBones.Select(i=>profile.bones[i].humanBone)
             .Where(targetByHuman.ContainsKey).Select(h=>targetByHuman[h]).ToArray();
         target.bodyPositionWeights=new float[bind.Length];
@@ -192,10 +231,10 @@ public static class OfflineRigFactory
     private static Bone Clone(Bone b)=>new(){ name=b.name,parent=b.parent,humanBone=b.humanBone,position=(float[])b.position.Clone(),rotation=(float[])b.rotation.Clone() };
     private static readonly Dictionary<int,int> Children=new(){[0]=7,[7]=8,[8]=54,[54]=9,[9]=10,[1]=3,[2]=4,[3]=5,[4]=6,[5]=19,[6]=20,[11]=13,[12]=14,[13]=15,[14]=16,[15]=17,[16]=18,[17]=30,[18]=45};
     private static Quaternion JointFrame(SkeletonPose pose,int b)=>JointFrameCore(pose,b,false);
-    private static Quaternion JointFrameCore(SkeletonPose pose,int b,bool targetFrames)
+    private static Quaternion JointFrameCore(SkeletonPose pose,int b,bool targetFrames,bool anatomicalArms=false)
     {
         int h=pose.Rig.bones[b].humanBone;
-        Quaternion body=targetFrames && h is 11 or 12 ? Heading(pose) : BodyFrame(pose);
+        Quaternion body=targetFrames && (h is 11 or 12 || anatomicalArms && h is >=13 and <=18) ? Heading(pose) : BodyFrame(pose);
         Vector3 up=Math3.Rotate(body,Vector3.UnitY),forward=Math3.Rotate(body,Vector3.UnitZ);
         int wanted=Children.GetValueOrDefault(h,-1);
         if (h>=24&&h<=53&&(h-24)%3!=2) wanted=h+1;
@@ -206,6 +245,11 @@ public static class OfflineRigFactory
             child=Array.FindIndex(pose.Rig.bones,x=>x.humanBone==wanted);
         }
         Vector3 direction=child>=0?pose.WorldPositions[child]-pose.WorldPositions[b]:Vector3.Zero;
+        if(anatomicalArms && h is 17 or 18)
+        {
+            int forearm=Array.FindIndex(pose.Rig.bones,x=>x.humanBone==h-2);
+            if(forearm>=0)direction=pose.WorldPositions[b]-pose.WorldPositions[forearm];
+        }
         if (direction.LengthSquared()<1e-10f)
         {
             int parent=pose.Rig.bones[b].parent;

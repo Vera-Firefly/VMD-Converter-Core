@@ -147,6 +147,22 @@ public sealed partial class HumanoidSolver
                     !float.IsFinite(rig.muscles[m].minimum)||!float.IsFinite(rig.muscles[m].maximum)||
                     rig.muscles[m].minimum>=0||rig.muscles[m].maximum<=0)))
                 throw new InvalidDataException("Invalid analytic shoulder response.");
+            if(group.armResponseAxes.Length!=0 || group.armResponseRadians.Length!=0)
+            {
+                int slots=n*group.bones.Length;
+                if(group.armResponseAxes.Length!=slots*3 || group.armResponseRadians.Length!=slots ||
+                    group.shoulderSwingAxes.Length!=0 || n is <2 or >3 ||
+                    group.muscles.Select(m=>rig.muscles[m].dof).Distinct().Count()!=n ||
+                    group.muscles.Any(m=>rig.muscles[m].humanBone is <13 or >18 ||
+                        rig.muscles[m].humanBone!=rig.muscles[group.muscles[0]].humanBone ||
+                        rig.muscles[m].dof is <0 or >2 || !float.IsFinite(rig.muscles[m].minimum) ||
+                        !float.IsFinite(rig.muscles[m].maximum) || rig.muscles[m].minimum>=0 || rig.muscles[m].maximum<=0) ||
+                    group.armResponseAxes.Any(v=>!float.IsFinite(v)) ||
+                    group.armResponseRadians.Any(v=>!float.IsFinite(v)||v<0) ||
+                    Enumerable.Range(0,slots).Any(i=>Math.Abs(Math3.V(group.armResponseAxes,i*3).LengthSquared()-
+                        (group.armResponseRadians[i]==0?0:1))>.001f))
+                    throw new InvalidDataException("Invalid analytic arm response.");
+            }
             foreach (var sample in group.samples)
             {
                 if (sample.positions.Length != group.bones.Length * 3 || sample.rotations.Length != group.bones.Length * 4)
@@ -560,6 +576,29 @@ public sealed partial class HumanoidSolver
             var center=group.samples[(group.samples.Length-1)/2];
             rotations=[ShoulderSwingResponse.Evaluate(Math3.Q(center.rotations),group.shoulderSwingAxes,Degrees(0),Degrees(1))];
             positions=[Math3.V(center.positions)];
+            return;
+        }
+        if (group.armResponseAxes.Length != 0)
+        {
+            // Unity folds total twist before distributing it between a segment
+            // and its child. Keep the caller's muscle values unchanged.
+            for (int d = 0; d < values.Length; d++)
+            {
+                var muscle = rig.muscles[group.muscles[d]];
+                if (muscle.dof != 0 || muscle.humanBone is < 13 or > 16 ||
+                    !float.IsFinite(muscle.maximum) || muscle.maximum <= 0 ||
+                    Math.Abs(muscle.minimum + muscle.maximum) > 1e-4f) continue;
+                float period = 360f / muscle.maximum;
+                float limit = group.muscleRanges.Length == 0 ? 1f : group.muscleRanges[d];
+                // A chart sampled across the cut cannot use this smooth model.
+                if (limit >= period * .5f) continue;
+                if (values[d] == -period * .5f) values[d] = period * .5f;
+                else if (values[d] >= period * .5f || values[d] < -period * .5f)
+                    values[d] -= period * MathF.Floor((values[d] + period * .5f) / period);
+            }
+            rotations = ArmResponse.Evaluate(rig, group, values);
+            var center = group.samples[(group.samples.Length - 1) / 2];
+            positions = Enumerable.Range(0, group.bones.Length).Select(b => Math3.V(center.positions, b * 3)).ToArray();
             return;
         }
         if (RangePolicy == HumanoidRangePolicy.Strict)

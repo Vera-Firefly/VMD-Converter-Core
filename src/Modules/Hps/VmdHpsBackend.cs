@@ -20,7 +20,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
     {
         readonly PmxModel model;
         readonly VmdHumanoidBackendOptions options;
-        readonly Rig rig,sourceRig;
+        readonly Rig rig,sourceRig,encodingRig;
         readonly SkeletonPose bind,sourceBind;
         readonly HumanoidSolver solver,sourceSolver,decoder;
         readonly HumanoidUpperProjector sourceUpper,targetUpper;
@@ -29,6 +29,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
         readonly int[] targetMappedAncestors;
         readonly bool[] upperNodes;
         readonly bool canonical,nativeCalibration;
+        readonly bool sourceForwardFix;
         readonly VmdTargetSolveRegion region;
         readonly float targetScale;
         readonly int rootMotionSource;
@@ -42,6 +43,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
         public Session(PmxModel model,VmdHumanoidBackendOptions options,VmdTargetRigData? legacy)
         {
             this.model=model;this.options=options;region=VmdOutputModes.Region(options.OutputKind);
+            sourceForwardFix=options.OutputKind is VmdExternalOutputKind.HumanoidIk or VmdExternalOutputKind.TargetFk;
             source=PmxRigBuilder.Map(model);
             sourceRig=PmxRigBuilder.Build(model,options.PositionScale,options.CoordinateConversion,options.ProfilePath);
             if(sourceRig.bindBones.Length==0)sourceRig.bindBones=sourceRig.bones;
@@ -82,8 +84,9 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 region==VmdTargetSolveRegion.Arm&&IsUpper(m.humanBone) ||
                 region==VmdTargetSolveRegion.Leg&&!IsUpper(m.humanBone)).Select(m=>m.humanBone).ToHashSet();
             bool geometry=options.LegFit switch {"auto"=>true,"geometry"=>true,"rotation"=>false,_=>throw new ArgumentException("Unknown leg fitting policy")};
-            solver=new HumanoidSolver(rig,selected,policy){FitDecodedArmContext=true,FitLegGeometry=geometry,AnchorLimbTwistToInitial=true,ReconstructDecodedRoot=true};
-            decoder=new HumanoidSolver(rig,rangePolicy:policy);
+            encodingRig=canonical?rig:OfflineRigFactory.ForHumanoidEncoding(rig,options.ProfilePath);
+            solver=new HumanoidSolver(encodingRig,selected,policy){FitDecodedArmContext=true,FitLegGeometry=geometry,AnchorLimbTwistToInitial=true,ReconstructDecodedRoot=true};
+            decoder=new HumanoidSolver(encodingRig,rangePolicy:policy);
             sourceSolver=new HumanoidSolver(sourceRig,sourceRig.muscles.Where(m=>m.humanBone is <11 or >18).Select(m=>m.humanBone).ToHashSet(),policy)
                 {ReconstructDecodedRoot=true};
             sourceUpper=new HumanoidUpperProjector(sourceRig,RawSourceBind());
@@ -106,7 +109,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 outputKind=options.OutputKind,bakeMorphs=options.BakeMorphs,
                 humanoid=new VmdHumanoidCalibrationData{muscles=rig.muscles.Select(m=>new VmdMuscleCalibration{property=MuscleProperty(m.name)}).ToArray()},
                 morphs=legacy?.morphs??rig.morphs.Select(m=>new VmdTargetMorphBinding{name=m.name,path=m.path}).ToArray()};
-            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|source-retarget-target-leg-seed-v3|"+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
+            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|source-retarget-upper-continuity-root-v5|"+(sourceForwardFix?"source-forward-v1|":"")+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
         }
 
         Rig RawSourceBind()
@@ -176,7 +179,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
             bool suppressLeft=!canonical;
             bool suppressRight=!canonical;
             var frames=new PoseFrame[samples.Length];var rawSource=new PoseFrame[samples.Length];var directFrames=new PoseFrame[samples.Length];
-            var seeds=new float[samples.Length][];
+            var seeds=new float[samples.Length][];var sourceBase=new float[samples.Length][];
             Parallel.For(0,frames.Length,new ParallelOptions{MaxDegreeOfParallelism=threads,TaskScheduler=scheduler??TaskScheduler.Default},frame=>
             {
                 PmxPose sample=samples[frame];
@@ -241,14 +244,20 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 }
                 var raw=Build(sourceRig,sourceBind,sourceTarget,true,1,false,false);rawSource[frame]=raw;
                 var sourceResult=sourceSolver.Solve(raw,options.Passes);
-                float[] sourceMuscles=sourceUpper.Project(raw,sourceResult.humanPose.muscles);
+                sourceBase[frame]=sourceResult.humanPose.muscles;
+                directFrames[frame]=Build(rig,bind,target,canonical,targetScale,options.TargetLegIk??false,false);
+            });
+            var sourceProjected=(sourceForwardFix?sourceUpper.ProjectSourceBatch(rawSource,sourceBase,threads,scheduler,sourceSolver.RangePolicy):sourceUpper.ProjectBatch(rawSource,sourceBase,threads,scheduler,sourceSolver.RangePolicy));
+            Parallel.For(0,frames.Length,new ParallelOptions{MaxDegreeOfParallelism=threads,TaskScheduler=scheduler??TaskScheduler.Default},frame=>
+            {
+                var raw=rawSource[frame];float[] sourceMuscles=sourceProjected[frame];
                 var sourceRoot=sourceSolver.ReconstructRoot(raw,sourceMuscles);
                 var seed=new float[rig.muscles.Length];foreach(var pair in musclePairs)seed[pair.target]=sourceMuscles[pair.source];
                 var root=new HumanPose{muscles=seed,
                     bodyPosition=Math3.A(Math3.V(rig.bodyPosition)+Math3.V(sourceRoot.bodyPosition)-Math3.V(sourceRig.bodyPosition)),
                     bodyRotation=Math3.A(Q.Normalize(Math3.Q(sourceRoot.bodyRotation)*Q.Inverse(Math3.Q(sourceRig.bodyRotation))*Math3.Q(rig.bodyRotation)))};
                 var pose=decoder.Decode(seed,root);
-                PoseFrame direct=Build(rig,bind,target,canonical,targetScale,options.TargetLegIk??false,false);directFrames[frame]=direct;
+                PoseFrame direct=directFrames[frame];
                 if(region!=VmdTargetSolveRegion.Canonical)
                 {
                     var targetPose=new SkeletonPose(rig,direct);
@@ -258,10 +267,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                     pose.UpdateWorld();
                 }
                 var goal=pose.ToFrame(raw.time);
-                if(region is VmdTargetSolveRegion.All or VmdTargetSolveRegion.Arm)
-                    // Projection is an optimizer estimate, not a final muscle constraint.
-                    // Keep the original goal and start its fit inside the solver domain.
-                    seed=solver.CreateFitSeed(targetUpper.Project(goal,seed));
+
                 // PMX muscle coordinates are valid for source retargeting, but
                 // can use a remote periodic branch (including tangent limits).
                 // They are not target-leg optimizer coordinates. Start only
@@ -271,6 +277,11 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                     for(int m=0;m<seed.Length;m++)if(rig.muscles[m].humanBone is >=1 and <=6)seed[m]=0;
                 frames[frame]=goal;seeds[frame]=seed;
             });
+            if(region is VmdTargetSolveRegion.All or VmdTargetSolveRegion.Arm)
+            {
+                var upperSeeds=targetUpper.ProjectBatch(frames,seeds,threads,scheduler,solver.RangePolicy);
+                for(int i=0;i<seeds.Length;i++)seeds[i]=solver.CreateFitSeed(upperSeeds[i]);
+            }
             ResultBatch fitted=solver.SolveBatch(new PoseBatch{frames=frames},threads,options.Passes,scheduler,seeds);
             if(region is VmdTargetSolveRegion.Canonical or VmdTargetSolveRegion.Leg)
                 for(int i=0;i<frames.Length;i++)for(int m=0;m<rig.muscles.Length;m++)
@@ -280,6 +291,15 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 for(int i=0;i<frames.Length;i++)for(int m=0;m<rig.muscles.Length;m++)
                     if(!IsUpper(rig.muscles[m].humanBone)&&fitted.frames[i].humanPose.muscles[m]!=seeds[i][m])
                         throw new InvalidDataException("Unselected source body muscles changed during arm fitting.");
+            if(region is VmdTargetSolveRegion.All or VmdTargetSolveRegion.Arm)
+            {
+                var continued=targetUpper.StabilizeBatch(frames,fitted.frames.Select(f=>f.humanPose.muscles).ToArray(),threads,scheduler,solver.RangePolicy);
+                // Arm continuation changes the body basis and mass center used by
+                // RootT/RootQ. Rebuild them after the final muscles to keep Hips
+                // at the already solved target, before decoding FK or writing curves.
+                Parallel.For(0,frames.Length,new ParallelOptions{MaxDegreeOfParallelism=threads,TaskScheduler=scheduler??TaskScheduler.Default},
+                    i=>fitted.frames[i].humanPose=solver.ReconstructRoot(frames[i],continued[i]));
+            }
             var decoded=new PoseFrame[frames.Length];var fk=new PoseFrame[frames.Length];
             Parallel.For(0,frames.Length,new ParallelOptions{MaxDegreeOfParallelism=threads,TaskScheduler=scheduler??TaskScheduler.Default},i=>
             {
@@ -296,7 +316,8 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                     }
                 fk[i]=output.ToFrame(frames[i].time);
             });
-            if(VmdOutputModes.IsFk(options.OutputKind)&&options.FkContinuity)fk=FkBranchContinuation.Process(rig,sourceRig,rawSource,fk);
+            // Forward source projection already owns the arm branch; do not replace it in a second FK pass.
+            if(VmdOutputModes.IsFk(options.OutputKind)&&options.FkContinuity&&!sourceForwardFix)fk=FkBranchContinuation.Process(rig,sourceRig,rawSource,fk);
             var result=WriteCurves(frames,fitted,fk);
             if(options.BakeMorphs)VmdCurveUtility.AddMorphCurves(motion,AnimationRig,result);
             if(options.DiagnosticsDirectory!=null)ConversionDiagnostics.Write(options.DiagnosticsDirectory,motion,rig,sourceRig,rawSource,directFrames,frames,fk,decoded,region.ToString(),VmdOutputModes.ToArgument(options.OutputKind));
@@ -318,7 +339,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 // Quaternion components must share the same retained key times.
                 var qs=fitted.frames.Select(f=>Math3.Q(f.humanPose.bodyRotation)).ToArray();
                 WriteQuaternion("","RootQ.",2,qs);
-                for(int m=0;m<rig.muscles.Length;m++){int channel=m;var values=fitted.frames.Select(f=>f.humanPose.muscles[channel]).ToArray();if(values.Any(v=>Math.Abs(v)>1e-7))Curve("",MuscleProperty(rig.muscles[m].name),2,values);}
+                for(int m=0;m<rig.muscles.Length;m++){int channel=m;var values=fitted.frames.Select(f=>f.humanPose.muscles[channel]).ToArray();UnwrapUpperAngle(values,rig.muscles[m]);if(values.Any(v=>Math.Abs(v)>1e-7))Curve("",MuscleProperty(rig.muscles[m].name),2,values);}
             }
             else
             {
@@ -367,6 +388,16 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
             position=V.TransformNormal(Math3.Rotate(Q.Inverse(delta),pose.WorldPositions[b]-parentPosition),matrix);
         }
         string BonePath(int b){var names=new List<string>();for(int i=b;i>=0&&rig.bones[i].parent>=0;i=rig.bones[i].parent)names.Add(rig.bones[i].name);names.Reverse();return string.Join('/',names);}
+        static void UnwrapUpperAngle(float[] values,Muscle muscle)
+        {
+            // Distributed upper/lower twist is deliberately excluded.
+            if(muscle.unityIndex is not (37 or 38 or 39 or 40 or 42 or 44 or 45 or 46 or 47 or 48 or 49 or 51 or 53 or 54))return;
+            double previous=0;for(int i=0;i<values.Length;i++){
+                double angle=values[i]*(values[i]<0?-muscle.minimum:muscle.maximum);
+                if(i>0){while(angle-previous>180)angle-=360;while(angle-previous< -180)angle+=360;}
+                previous=angle;values[i]=(float)(angle/(angle<0?-muscle.minimum:muscle.maximum));
+            }
+        }
         static bool IsUpper(int h)=>h is >=11 and <=18 or >=24 and <=53;
         static string MuscleProperty(string name)
         {

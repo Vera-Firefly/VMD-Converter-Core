@@ -38,13 +38,13 @@ internal static class ArmResponse
         return output;
     }
 
-    internal static void Configure(Rig rig)
+    internal static void Configure(Rig rig,bool legs=false)
     {
         foreach(var group in rig.groups)
         {
             int dimensions=group.muscles.Length,count=group.bones.Length;
             int owner=rig.muscles[group.muscles[0]].humanBone;
-            if(owner is <13 or >18 || dimensions is <2 or >3 ||
+            if((legs ? owner is <1 or >6 : owner is <13 or >18) || dimensions is <2 or >3 ||
                 group.muscles.Any(m=>rig.muscles[m].humanBone!=owner || rig.muscles[m].dof is <0 or >2 ||
                     !float.IsFinite(rig.muscles[m].minimum) || !float.IsFinite(rig.muscles[m].maximum) ||
                     rig.muscles[m].minimum>=0 || rig.muscles[m].maximum<=0) ||

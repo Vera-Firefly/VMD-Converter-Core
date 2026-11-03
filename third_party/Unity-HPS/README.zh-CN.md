@@ -36,15 +36,21 @@ PoseFrame local = solver.Decode(result.frames[0].humanPose.muscles,
 ```
 
 - `OfflineRigFactory.FromFbx`、`FbxReader.Read`：离线骨架、映射与形态键。
+- `OfflineRigFactory.ForHumanoidEncoding(poseRig, profilePath: null)`：在目标骨骼姿态构造完成后，创建供 Humanoid 编解码使用的目标响应 rig。它保留骨骼顺序、位置和绑定，为离线默认 rig 增加上肢解析摆动与分布式 Twist 响应；将返回值传给 `HumanoidSolver`。原姿态传递 rig 保持不变，已有原生 Avatar 标定直接保留。此接口选择响应模型，不改变目标 IK 求解区域。
 - FBX 和描述文件的目标 rig 使用 `HumanoidResponseTransport.AnatomicalTargets`：下肢中立屈伸使用 Avatar 水平朝向，变化的下肢联动响应按所属肢段传递，躯干沿下一已映射的躯干骨骼定向，肩部与踝部采用重力稳定的水平朝向；Chest 已映射且 UpperChest 未映射时，其通道作用于 Chest。已有骨架可调用 `OfflineRigFactory.FromSkeleton(document, profilePath, HumanoidResponseTransport.AnatomicalTargets)`。`AnatomicalLegs` 保留此前仅调整下肢的规则。双参数 `FromSkeleton`、`Transfer` 保留 `JointFrames`，供源姿态编码使用；读取 HPS rig JSON 时保留其中的响应数据。 目标肩部在配置支持时使用双通道组合摆动响应，并读取 FBX 元数据中中心为零的非对称肩部范围；其他自定义范围保留配置默认值并发出警告。需要 Avatar 专属标定响应时应导出 HPS rig。
 - `HumanoidSolver.Solve`、`SolveBatch`、`SolveMuscles`、`Decode`：姿态／曲线转换，可选活动 HumanBone 分组和初始肌肉。
 - `ReconstructRoot`：外部修改肌肉后重算根运动。`FitDecodedArmContext` 在解码后的躯干和肩坐标中求手臂；`FitLegGeometry` 启用几何下肢拟合；`AnchorLimbTwistToInitial` 添加初始扭转软约束。
 - `HumanoidUpperProjector.Project`：源／目标上肢解剖投影，返回独立肌肉数组，不改动未选择通道。
+- `HumanoidUpperProjector.ProjectBatch`：按时间顺序投影整段动作并保持上肢连续性，可指定线程数、调度器及求值范围策略。
+- `HumanoidUpperProjector.ProjectSourceBatch`：使用内嵌源响应数据，按动作独立维护分支连续性。时间须有限、非负且严格递增；保留非上肢通道，不修改调用者输入，不需要外部标定文件或环境变量。
+- `HumanoidUpperProjector.StabilizeBatch`：对已拟合的上肢曲线进行连续性处理，保留其余肌肉通道。
+- `OfflineRigFactory.ForHumanoidLegEncoding`：生成用于大角度 Humanoid 编码的便携腿部响应 rig；保留输入 rig、非腿部响应及显式 Avatar 标定。
+- `HumanoidSolver(rig, activeHumanBones, rangePolicy, canonicalCurveTwists: true)`：拟合动画曲线时，将上肢轴向扭转限制在主值分支。原构造函数保留既有解码范围；`FitArmGeometry` 可独立于 `FitLegGeometry` 控制上肢几何拟合。
 - `FkBranchContinuation.Process`：全序列等效手臂分支处理；不修改输入数组。`FkRollContinuation` 提供独立的流式前臂策略。
 - `HumanoidBodyMassCalibration.Fit`、`RootCalibration.Fit`：根质量标定，应用前使用独立参考验收。
 - `SkeletonPose`、`TwoBoneIk`、`AvatarDescriptorIO`、`HpsJson`：姿态、IK、FBX 描述及序列化。
 
-批量共用不可变标定与模型数据，各帧状态独立。根运动依据最终肌肉求解。精度取决于标定覆盖及目标骨架差异；纯 FBX 与原生 Avatar 标定是不同输入类型。
+批量共用不可变标定与模型数据，上肢连续投影的历史按动作隔离，各帧拟合仍可并行。根运动依据最终肌肉求解。精度取决于标定覆盖及目标骨架差异；纯 FBX 与原生 Avatar 标定是不同输入类型。
 
 ## Unity 原生标定
 

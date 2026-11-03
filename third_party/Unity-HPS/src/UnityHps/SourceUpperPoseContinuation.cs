@@ -2,16 +2,31 @@ namespace UnityHps;
 
 internal sealed class SourceUpperPoseContinuation
 {
-    // Continuing a rotation branch must not replace the current clavicle motion.
-    const double MaximumShoulderCorrectionRadians = 15 * Math.PI / 180;
     readonly UpperModel model;
     readonly Dictionary<int,int> bones;
     readonly Dictionary<int,Joint> joints;
     readonly Dictionary<int,Q> pre,post;
     readonly double[] GuardNegative,GuardPositive;
+    readonly double[] mass;
+    double[]? bodyRaw;
+    Q bodyAnchorBasis;
+    double[]? bodyAnchorCentre;
+    static readonly Lazy<double[]> ReferenceMass=new(LoadReferenceMass);
+    static double[] LoadReferenceMass(){
+        using var input=typeof(SourceUpperPoseContinuation).Assembly.GetManifestResourceStream("UnityHps.Upper.source-body-mass.json.gz")
+            ??throw new InvalidDataException("Missing source body mass response");
+        using var stream=new System.IO.Compression.GZipStream(input,System.IO.Compression.CompressionMode.Decompress);
+        var data=System.Text.Json.JsonSerializer.Deserialize(stream,UpperProjectionJsonContext.Default.SourceBodyMassData)
+            ??throw new InvalidDataException("Empty source body mass response");
+        if(data.version!=1)throw new InvalidDataException("Unsupported source body mass response");
+        return data.weights;
+    }
+
     internal SourceUpperPoseContinuation(UpperModel model,double[] negative,double[] positive)
     {
         this.model=model;GuardNegative=negative;GuardPositive=positive;
+        mass=ReferenceMass.Value;
+        if(mass.Length!=model.ReferenceRig.bindBones.Length||mass.Any(x=>x<0)||Math.Abs(mass.Sum()-1)>1e-5)throw new InvalidDataException("Invalid source mass model");
         bones=model.ReferenceRig.bones.Select((b,i)=>(b.humanBone,i)).Where(b=>b.humanBone>=0).ToDictionary(b=>b.humanBone,b=>b.i);
         joints=model.Joints.ToDictionary(j=>j.HumanBone);
         pre=joints.ToDictionary(j=>j.Key,j=>Q.Read(j.Value.Pre));post=joints.ToDictionary(j=>j.Key,j=>Q.Read(j.Value.Post));
@@ -36,30 +51,56 @@ internal sealed class SourceUpperPoseContinuation
         var t=new double[3];foreach(int c in new[]{c1,c2}){var m=model.ReferenceRig.muscles[c];double a=v[c-37]*(v[c-37]<0?-m.minimum:m.maximum)*joints[h].LimitSign[m.dof];t[m.dof]=Math.Tan(a*Math.PI/360);}
         return new Q(0,t[1],t[2],1).Normalized;
     }
-    Q[] RawArm(double[] raw,int side){
-        int s=11+side,u=13+side,f=15+side,h=17+side;
-        Q Read(int bone)=>Q.Read(raw.AsSpan(bones[bone]*4,4));
-        Q shoulderFrame=pre[s].Inverse*Read(s)*post[s];
-        Q shoulder=(pre[s]*shoulderFrame.Swing*post[s].Inverse).Normalized;
-        Q upper=pre[u].Inverse*(shoulder.Inverse*Read(s)*Read(u))*post[u],hand=pre[h].Inverse*Read(h)*post[h];
-        Q handTwist=hand.Twist;
-        Q forearm=pre[f].Inverse*(Read(f)*pre[h]*handTwist*pre[h].Inverse)*post[f];
-        Q Half(Q value){Q twist=value.Twist;if(twist.W<0||twist.W==0&&twist.X<0)twist=new Q(-twist.X,0,0,-twist.W);return new Q(twist.X,0,0,1+twist.W).Normalized;}
-        Q a=Half(upper),b=Half(forearm);
-        // Guide motion in the same distributed-twist topology as the decoder.
-        // Moving wrist axial rotation into the forearm preserves the complete
-        // wrist orientation; splitting each total twist shares its increment.
-        return[shoulder,(pre[u]*upper.Swing*a*post[u].Inverse).Normalized,
-            (post[u]*a*post[u].Inverse*pre[f]*forearm.Swing*b*post[f].Inverse).Normalized,
-            (post[f]*b*post[f].Inverse*pre[h]*(handTwist.Inverse*hand.Swing*handTwist)*post[h].Inverse).Normalized];
+    // One ordered motion. Raw pose increments guide branch continuity, not accuracy.
+    // Use a fixed branch clock and fit independently sampled intermediate poses.
+    internal void StabilizeSequence(double[][] raw,double[][] values,float[] times){
+        if(times.Length<2||times[1]-times[0]>1f/60+.00001f){StabilizeOrdered(raw,values,times);return;}
+        var indices=new List<int>{0};double next=times[0]+1d/30;
+        for(int f=1;f<times.Length;f++)if(times[f]>=next-.00001){indices.Add(f);next=times[0]+indices.Count/30d;}
+        if(indices[^1]!=times.Length-1)indices.Add(times.Length-1);
+        var anchors=indices.Select(i=>(double[])values[i].Clone()).ToArray();
+        StabilizeOrdered(indices.Select(i=>raw[i]).ToArray(),anchors,indices.Select(i=>times[i]).ToArray());
+        for(int k=0;k<indices.Count;k++)Array.Copy(anchors[k],values[indices[k]],18);
+        Q Mix(Q a,Q b,double t){var x=System.Numerics.Quaternion.Lerp(new((float)a.X,(float)a.Y,(float)a.Z,(float)a.W),new((float)b.X,(float)b.Y,(float)b.Z,(float)b.W),(float)t);return new Q(x.X,x.Y,x.Z,x.W).Normalized;}
+        int fittedCount=0,rejected=0;
+        for(int segment=0;segment+1<indices.Count;segment++){
+            int a=indices[segment],b=indices[segment+1];var qa=new[]{SLocal(values[a],0),SLocal(values[a],1)};var qb=new[]{SLocal(values[b],0),SLocal(values[b],1)};
+            for(int f=a+1;f<b;f++){
+                double t=(times[f]-times[a])/(times[b]-times[a]);var seed=new double[18];
+                for(int slot=0;slot<18;slot++){
+                    double x=Degrees(values[a],slot),y=Degrees(values[b],slot);
+                    if(slot%9 is not (4 or 6)){while(y-x>180)y-=360;while(y-x< -180)y+=360;}
+                    seed[slot]=NormalizeDegrees(x+(y-x)*t,slot);
+                }
+                var solved=(double[])seed.Clone();
+                for(int side=0;side<2;side++){
+                    var expected=Enumerable.Range(0,4).Select(k=>Mix(qa[side][k],qb[side][k],t)).ToArray();var initial=SLocal(seed,side);
+                    double error=Enumerable.Range(0,4).Max(k=>GAngle(expected[k],initial[k])*180/Math.PI);
+                    if(error<.15)continue;
+                    bodyRaw=raw[f];var anchor=BodyPose(seed);bodyAnchorBasis=BodyBasis(anchor.positions);bodyAnchorCentre=Centre(anchor.positions);
+                    int[] chain=[11+side,13+side,15+side,17+side];var pos=new double[4][];var world=new Q[4];int parent=model.ReferenceRig.bindBones[bones[chain[0]]].parent;
+                    for(int k=0;k<4;k++){
+                        int bone=bones[chain[k]];var offset=model.ReferenceRig.bindBones[bone].position.Select(x=>(double)x).ToArray();
+                        Q p=k==0?anchor.rotations[parent]:world[k-1];var pp=k==0?anchor.positions[parent]:pos[k-1];world[k]=(p*expected[k]).Normalized;pos[k]=GAdd(pp,GRotate(p,offset));
+                    }
+                    double length=Length(Sub(pos[1],pos[2]))+Length(Sub(pos[2],pos[3]));double score=double.PositiveInfinity;double[]? best=null;
+                    for(int startIndex=0;startIndex<2;startIndex++){
+                        var start=startIndex==0?(double[])seed.Clone():(double[])values[f].Clone();BoundGuard(start,seed,side);
+                        var candidate=FitGuard(start,seed,seed,side,expected,pos[2],pos[3],world[3],length);
+                        var actual=SLocal(candidate,side);double maximum=Enumerable.Range(0,4).Max(k=>GAngle(expected[k],actual[k])*180/Math.PI);
+                        if(maximum<score){score=maximum;best=candidate;}
+                    }
+                    if(score<Math.Min(error,10)){Array.Copy(best!,side*9,solved,side*9,9);fittedCount++;}else rejected++;
+                }
+                foreach(int slot in new[]{5,14})solved[slot]=NormalizeDegrees(Principal(Degrees(solved,slot)),slot);
+                values[f]=solved;
+            }
+        }
+        Console.Error.WriteLine($"Source canonical clock: anchors={indices.Count}; subframe fits={fittedCount}; rejected={rejected}");
     }
-    // Select branches against the current source pose. Integrating corrections
-    // from prior frames can carry an incorrect axial branch through a whole clip.
-    internal void StabilizeSequence(double[][] raw,double[][] values,float[] times)
+    void StabilizeOrdered(double[][] raw,double[][] values,float[] times)
     {
-        double[]? previous=null;int corrected=0,rejected=0,excursions=0;
-        var initial=values.Select(v=>(double[])v.Clone()).ToArray();
-        var isolated=IsolatedTwistCuts(initial,times);
+        Q[][]? previousRaw=null,previousSolved=null;double[]? previous=null;int corrected=0;
         for(int f=0;f<values.Length;f++){
             // Native evaluation folds total twist before splitting it. Keep
             // serialized keys in that chart too: equivalent endpoint values
@@ -67,39 +108,20 @@ internal sealed class SourceUpperPoseContinuation
             foreach(int slot in new[]{4,6,13,15})values[f][slot]=NormalizeDegrees(Principal(Degrees(values[f],slot)),slot);
             var currentRaw=new Q[2][];var solved=new Q[2][];
             for(int side=0;side<2;side++){
-                currentRaw[side]=RawArm(raw[f],side);
+                int[] chain=[11+side,13+side,15+side,17+side];
+                currentRaw[side]=chain.Select(h=>Q.Read(raw[f].AsSpan(bones[h]*4,4))).ToArray();
                 solved[side]=SLocal(values[f],side);
                 if(previous==null)continue;
-                var expected=new Q[4];for(int k=0;k<4;k++)expected[k]=k==0?currentRaw[side][k]:(expected[k-1]*currentRaw[side][k]).Normalized;
-                var decoded=LocalArm(values[f],side);
-                double maximum=Enumerable.Range(0,4).Max(k=>GAngle(expected[k],decoded.world[k])*180/Math.PI);
+                var expected=Enumerable.Range(0,4).Select(k=>(previousSolved![side][k]*previousRaw![side][k].Inverse*currentRaw[side][k]).Normalized).ToArray();
+                double maximum=Enumerable.Range(0,4).Max(k=>GAngle(expected[k],solved[side][k])*180/Math.PI);
                 bool nearCut=Enumerable.Range(0,9).Where(c=>c!=5).Any(c=>Math.Abs(Principal(Degrees(values[f],side*9+c)))>178.75);
                 bool crossing=Enumerable.Range(0,9).Where(c=>c!=5).Any(c=>Math.Abs(Principal(Degrees(values[f],side*9+c))-Principal(Degrees(previous,side*9+c)))>180);
-                if(maximum<100&&!nearCut&&!crossing)continue;
-                var baseline=(double[])values[f].Clone();var target=LocalArm(baseline,side);
+                if(maximum<45&&!nearCut)continue;
+                var baseline=(double[])values[f].Clone();
+                bodyRaw=raw[f];var anchor=BodyPose(baseline);bodyAnchorBasis=BodyBasis(anchor.positions);bodyAnchorCentre=Centre(anchor.positions);
+                var target=LocalArm(baseline,side);
                 double length=Length(Sub(target.position[1],target.position[2]))+Length(Sub(target.position[2],target.position[3]));
-                if(isolated[f,side]){
-                    var prior=SLocal(previous,side);var localExpected=new Q[4];double sourceStep=0,outputStep=0;
-                    for(int k=0;k<4;k++){
-                        int b=bones[11+2*k+side];Q a=Q.Read(raw[f-1].AsSpan(b*4,4)),bq=Q.Read(raw[f].AsSpan(b*4,4));
-                        sourceStep=Math.Max(sourceStep,GAngle(a,bq)*180/Math.PI);
-                        outputStep=Math.Max(outputStep,GAngle(prior[k],target.local[k])*180/Math.PI);
-                        localExpected[k]=(prior[k]*a.Inverse*bq).Normalized;
-                    }
-                    if(sourceStep<70&&outputStep>100){
-                        double[]? localBest=null;double localScore=SumSquares(GuardResidual(baseline,baseline,side,localExpected,target.position[2],target.position[3],target.world[3],length,true));
-                        for(int seed=0;seed<2;seed++){
-                            var start=(double[])baseline.Clone();if(seed==1)Array.Copy(previous,side*9,start,side*9,9);BoundGuard(start,previous,side);
-                            var fitted=FitGuard(start,previous,baseline,side,localExpected,target.position[2],target.position[3],target.world[3],length,true);
-                            double cost=SumSquares(GuardResidual(fitted,baseline,side,localExpected,target.position[2],target.position[3],target.world[3],length,true));
-                            if(cost<localScore&&GAngle(target.local[0],SLocal(fitted,side)[0])<=MaximumShoulderCorrectionRadians){localScore=cost;localBest=fitted;}
-                        }
-                        if(localBest!=null){Array.Copy(localBest,side*9,values[f],side*9,9);excursions++;continue;}
-                    }
-                    if(sourceStep<70&&outputStep<=100)continue;
-                }
-                double[] best=baseline;
-                double score=SumSquares(GuardResidual(baseline,baseline,side,expected,target.position[2],target.position[3],target.world[3],length));
+                double[]? best=null;double score=double.PositiveInfinity;
                 for(int seed=0;seed<2;seed++){
                     var start=(double[])baseline.Clone();if(seed==1)Array.Copy(previous,side*9,start,side*9,9);
                     BoundGuard(start,previous,side);
@@ -107,26 +129,15 @@ internal sealed class SourceUpperPoseContinuation
                     double cost=SumSquares(GuardResidual(fitted,baseline,side,expected,target.position[2],target.position[3],target.world[3],length));
                     if(cost<score){score=cost;best=fitted;}
                 }
-                if(best.Any(x=>!double.IsFinite(x)))throw new InvalidDataException("Nonfinite upper continuation");
-                if(GAngle(solved[side][0],SLocal(best,side)[0])>MaximumShoulderCorrectionRadians){rejected++;continue;}
-                if(Enumerable.Range(0,9).Any(c=>best[side*9+c]!=baseline[side*9+c]))corrected++;
-                Array.Copy(best,side*9,values[f],side*9,9);
+                if(best==null||best.Any(x=>!double.IsFinite(x)))throw new InvalidDataException("Nonfinite upper continuation");
+                bool candidateCut=new[]{4,6}.Any(c=>Math.Abs(Principal(Degrees(best,side*9+c)))>178.75);
+                double shoulderLimit=candidateCut?15:13;
+                if(GAngle(solved[side][0],SLocal(best,side)[0])*180/Math.PI>shoulderLimit)continue;
+                Array.Copy(best,side*9,values[f],side*9,9);solved[side]=SLocal(values[f],side);corrected++;
             }
-            previous=values[f];
+            previousRaw=currentRaw;previousSolved=solved;previous=values[f];
         }
-        Console.Error.WriteLine($"Source arm branch guard: {values.Length} frames; corrected side/frames={corrected}; rejected clavicle changes={rejected}; isolated cuts={excursions}; continuity only");
-    }
-    bool[,] IsolatedTwistCuts(double[][] initial,float[] times){
-        var result=new bool[initial.Length,2];
-        for(int f=1;f<initial.Length;f++)for(int side=0;side<2;side++)foreach(int c in new[]{4,6}){
-            int slot=side*9+c;double a=Principal(Degrees(initial[f-1],slot)),b=Principal(Degrees(initial[f],slot));
-            if(Math.Abs(a-b)<=180)continue;
-            for(int j=f+1;j<initial.Length&&times[j]-times[f]<=.12f;j++){
-                double end=Principal(Degrees(initial[j],slot));
-                if(Math.Abs(end-a)<180&&Math.Abs(end-b)>180){for(int i=f-1;i<=j;i++)result[i,side]=true;break;}
-            }
-        }
-        return result;
+        Console.Error.WriteLine($"Source body-coupled guard: {values.Length} frames; corrected side/frames={corrected}; continuity only");
     }
     double Degrees(double[] v,int slot){var m=model.ReferenceRig.muscles[37+slot];return v[slot]*(v[slot]<0?-m.minimum:m.maximum);}
     double NormalizeDegrees(double angle,int slot){var m=model.ReferenceRig.muscles[37+slot];return angle/(angle<0?-m.minimum:m.maximum);}
@@ -151,7 +162,29 @@ internal sealed class SourceUpperPoseContinuation
             world[k]=k==0?local[k]:(world[k-1]*local[k]).Normalized;
             position[k]=k==0?new double[3]:GAdd(position[k-1],GRotate(world[k-1],offset));
         }
+        if(bodyRaw!=null){
+            var pose=BodyPose(v);Q rotation=(bodyAnchorBasis*BodyBasis(pose.positions).Inverse).Normalized;var center=Centre(pose.positions);
+            for(int k=0;k<4;k++){int b=bones[chain[k]];world[k]=(rotation*pose.rotations[b]).Normalized;position[k]=GAdd(bodyAnchorCentre!,GRotate(rotation,Sub(pose.positions[b],center)));}
+        }
         return(local,world,position);
+    }
+    (Q[] rotations,double[][] positions) BodyPose(double[] v){
+        var rest=model.ReferenceRig.bindBones;var rotations=new Q[rest.Length];var positions=new double[rest.Length][];
+        var left=SLocal(v,0);var right=SLocal(v,1);
+        for(int b=0;b<rest.Length;b++){
+            int h=rest[b].humanBone;Q q=h is >=11 and <=18?(h%2==1?left[(h-11)/2]:right[(h-12)/2]):Q.Read(bodyRaw!.AsSpan(b*4,4));
+            var offset=rest[b].position.Select(x=>(double)x).ToArray();int parent=rest[b].parent;
+            rotations[b]=parent<0?q:(rotations[parent]*q).Normalized;
+            positions[b]=parent<0?offset:GAdd(positions[parent],GRotate(rotations[parent],offset));
+        }
+        return(rotations,positions);
+    }
+    double[] Centre(double[][] position){var result=new double[3];for(int b=0;b<position.Length;b++)for(int c=0;c<3;c++)result[c]+=position[b][c]*mass[b];return result;}
+    Q BodyBasis(double[][] position){
+        double[] Get(int h)=>position[bones[h]];
+        var up=Sub(GAdd(Get(13),Get(14)),GAdd(Get(1),Get(2)));var right=GAdd(Sub(Get(14),Get(13)),Sub(Get(2),Get(1)));
+        var u=new System.Numerics.Vector3((float)up[0],(float)up[1],(float)up[2]);var r=new System.Numerics.Vector3((float)right[0],(float)right[1],(float)right[2]);
+        var q=Math3.LookRotation(System.Numerics.Vector3.Cross(r,u),u);return new Q(q.X,q.Y,q.Z,q.W).Normalized;
     }
     static double[] Sub(double[] a,double[] b)=>a.Zip(b,(x,y)=>x-y).ToArray();
     static double Length(double[] a)=>Math.Sqrt(a.Sum(x=>x*x));
@@ -160,10 +193,9 @@ internal sealed class SourceUpperPoseContinuation
         double n=Math.Sqrt(q.X*q.X+q.Y*q.Y+q.Z*q.Z),scale=n<1e-10?2:2*Math.Atan2(n,q.W)/n;
         return[q.X*scale,q.Y*scale,q.Z*scale];
     }
-    double[] GuardResidual(double[] values,double[] baseline,int side,Q[] expected,double[] elbow,double[] wrist,Q wristRotation,double length,bool local=false){
-        var decoded=LocalArm(values,side);var r=new List<double>(33);
-        for(int k=0;k<4;k++)r.AddRange(LogDifference(expected[k],local?decoded.local[k]:decoded.world[k]));
-        if(!local)r.AddRange(LogDifference(SLocal(baseline,side)[0],decoded.local[0]).Select(x=>x*5));
+    double[] GuardResidual(double[] values,double[] baseline,int side,Q[] expected,double[] elbow,double[] wrist,Q wristRotation,double length){
+        var decoded=LocalArm(values,side);var r=new List<double>(30);
+        for(int k=0;k<4;k++)r.AddRange(LogDifference(expected[k],decoded.local[k]));
         r.AddRange(LogDifference(wristRotation,decoded.world[3]).Select(x=>x*3));
         r.AddRange(Sub(decoded.position[3],wrist).Select(x=>x*5/Math.Max(.001,length)));
         r.AddRange(Sub(decoded.position[2],elbow).Select(x=>x*5/Math.Max(.001,length)));
@@ -171,9 +203,9 @@ internal sealed class SourceUpperPoseContinuation
         return r.ToArray();
     }
     static double SumSquares(double[] v)=>v.Sum(x=>x*x);
-    double[] FitGuard(double[] start,double[] previous,double[] baseline,int side,Q[] expected,double[] elbow,double[] wrist,Q wristRotation,double length,bool local=false){
+    double[] FitGuard(double[] start,double[] previous,double[] baseline,int side,Q[] expected,double[] elbow,double[] wrist,Q wristRotation,double length){
         var values=(double[])start.Clone();double lambda=.001;
-        double[] Residual(double[] v)=>GuardResidual(v,baseline,side,expected,elbow,wrist,wristRotation,length,local);
+        double[] Residual(double[] v)=>GuardResidual(v,baseline,side,expected,elbow,wrist,wristRotation,length);
         var residual=Residual(values);double cost=SumSquares(residual);
         for(int iteration=0;iteration<18;iteration++){
             const double epsilon=.001;var jacobian=new double[9][];
@@ -200,3 +232,5 @@ internal sealed class SourceUpperPoseContinuation
         return values;
     }
 }
+
+internal sealed class SourceBodyMassData { public int version {get;set;} public double[] weights {get;set;}=[]; }

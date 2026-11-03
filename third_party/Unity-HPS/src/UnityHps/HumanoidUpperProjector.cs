@@ -40,18 +40,20 @@ public sealed partial class HumanoidUpperProjector
     readonly Muscle[] outputLimits;
     readonly int muscleCount;
     static readonly Lazy<(UpperModel model, double[][][] residual, double[] ranges, int count)> Shared = new(Load);
+    static readonly Lazy<(UpperModel model, double[][][] residual, double[] ranges, int count)> SourceShared = new(()=>LoadData("source-"));
     static Stream Resource(string name)
     {
         var input = typeof(HumanoidUpperProjector).Assembly.GetManifestResourceStream("UnityHps.Upper." + name)
             ?? throw new InvalidOperationException("Missing upper response resource: " + name);
         return new GZipStream(input, CompressionMode.Decompress);
     }
-    static (UpperModel, double[][][], double[], int) Load()
+    static (UpperModel, double[][][], double[], int) Load()=>LoadData("");
+    static (UpperModel, double[][][], double[], int) LoadData(string prefix)
     {
-        using var input = Resource("response.json.gz");
+        using var input = Resource(prefix+"response.json.gz");
         var model = JsonSerializer.Deserialize(input, UpperProjectionJsonContext.Default.UpperModel)
             ?? throw new InvalidDataException("Empty upper response model");
-        using var reader = new BinaryReader(Resource("residual.bin.gz"));
+        using var reader = new BinaryReader(Resource(prefix+"residual.bin.gz"));
         if (reader.ReadInt32() != 1) throw new InvalidDataException("Unsupported upper residual model");
         int count = reader.ReadInt32();
         if (count < 22 || count > 100000) throw new InvalidDataException("Invalid upper neighbor count");
@@ -133,9 +135,10 @@ public sealed partial class HumanoidUpperProjector
 
     private double[] ProjectUpper(PoseFrame frame) => ProjectUpper(adapter.Map(frame));
 
-    private double[] ProjectUpper(double[] raw)
+    private double[] ProjectUpper(double[] raw,UpperProjection? sourceBaseline=null,double[][][]? sourceResidual=null)
     {
-        var output = baseline.Solve(raw);
+        var activeBaseline=sourceBaseline??baseline;
+        var output = activeBaseline.Solve(raw);
         for (int side = 0; side < 2; side++)
         {
             int s = 11 + side, u = 13 + side, f = 15 + side, h = 17 + side, o = 9 * side;
@@ -148,11 +151,12 @@ public sealed partial class HumanoidUpperProjector
             double[] context = [a, 2 * Math.Atan2(su.Y, su.W), 2 * Math.Atan2(su.Z, su.W), 2 * Math.Atan2(sf.Y, sf.W), 2 * Math.Atan2(sf.Z, sf.W)];
             for (int i = 0; i < 5; i++) context[i] *= 180 / Math.PI;
             var normalized = new double[18];
-            Array.Copy(baseline.PredictContext(side, context), 0, normalized, o, 9);
+            Array.Copy(activeBaseline.PredictContext(side, context), 0, normalized, o, 9);
             double[] y = Encode(normalized, side), query = context.Select((v, i) => v / ranges[i]).ToArray();
-            double[] correction = Fit(query, side);
+            double[] correction = Fit(query,side,sourceResidual);
             for (int i = 0; i < y.Length; i++) y[i] += correction[i];
-            double[] native = Decode(y, side);
+            var learnedContext=Decode(y,side);
+            double[] native = learnedContext;
             double ownU = 2 * Math.Atan2(tu.X, tu.W) * joints[u].LimitSign[0] * 2 / Math.PI;
             double ownF = 2 * Math.Atan2(tf.X, tf.W) * joints[f].LimitSign[0] * 2 / Math.PI;
             for (int i = 2; i <= 6; i++) output[o + i] = native[o + i];
@@ -169,9 +173,9 @@ public sealed partial class HumanoidUpperProjector
         return output;
     }
 
-    double[] Fit(double[] query, int side)
+    double[] Fit(double[] query,int side,double[][][]? sourceResidual=null)
     {
-        var points = residual[side];
+        var points = (sourceResidual??residual)[side];
         var nearest = new PriorityQueue<(int Index, double Distance), double>();
         for (int i = 0; i < points.Length; i++)
         {
@@ -236,4 +240,5 @@ public sealed partial class HumanoidUpperProjector
 
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(UpperModel))]
+[JsonSerializable(typeof(SourceBodyMassData))]
 internal partial class UpperProjectionJsonContext : JsonSerializerContext { }

@@ -36,15 +36,21 @@ PoseFrame local = solver.Decode(result.frames[0].humanPose.muscles,
 ```
 
 - `OfflineRigFactory.FromFbx`, `FbxReader.Read`: offline skeleton, mappings and morphs.
+- `OfflineRigFactory.ForHumanoidEncoding(poseRig, profilePath: null)`: create a target Humanoid response rig after constructing the target bone poses. It retains bone order, offsets and bindings, and adds analytic arm swing/distributed-twist responses to portable default rigs. Pass the returned rig to `HumanoidSolver` for encoding or decoding. The pose-transport rig is preserved; supplied native Avatar calibration is returned unchanged. This selects a response model, not a target IK region.
 - FBX and descriptor target rigs use `HumanoidResponseTransport.AnatomicalTargets`: neutral leg flexion uses horizontal Avatar heading while coupled leg responses follow their owning segment; torso frames follow the next mapped torso link; shoulder and ankle axes use gravity-stable heading. When Chest is mapped, unmapped UpperChest channels delegate to it. For an existing skeleton, select it with `OfflineRigFactory.FromSkeleton(document, profilePath, HumanoidResponseTransport.AnatomicalTargets)`. `AnatomicalLegs` retains the earlier leg-only transport. The two-argument `FromSkeleton` and `Transfer` overloads retain `JointFrames` for source-pose encoding. Serialized HPS rigs keep their supplied responses. Anatomical target shoulders use a coupled swing response when the supplied profile supports it. FBX metadata supplies asymmetric shoulder limits with zero centers; other custom limits retain profile defaults and emit a warning. Export an HPS rig for Avatar-specific calibrated responses.
 - `HumanoidSolver.Solve`, `SolveBatch`, `SolveMuscles`, `Decode`: pose/curve conversion, optional active human-bone groups and initial muscles.
 - `HumanoidSolver.ReconstructRoot`: root fitting after external muscle edits. `FitDecodedArmContext` fits arms under the decoded shoulder/body context; `FitLegGeometry` selects geometry-aware leg fitting. `AnchorLimbTwistToInitial` adds a soft initial twist prior.
 - `HumanoidUpperProjector.Project`: anatomical source/target upper projection; returns a new muscle array and preserves unselected channels.
+- `HumanoidUpperProjector.ProjectBatch`: project an ordered motion with per-motion arm continuity; accepts worker count, scheduler and range policy.
+- `HumanoidUpperProjector.ProjectSourceBatch`: encode ordered source motion with per-motion branch continuity and embedded source responses. Frame times must be finite, nonnegative and strictly increasing; non-upper channels and caller-owned inputs are preserved. Source responses require no external calibration files or environment variables.
+- `HumanoidUpperProjector.StabilizeBatch`: continue already fitted arm curves while preserving other muscle channels.
+- `OfflineRigFactory.ForHumanoidLegEncoding`: create a portable leg response rig for large-angle Humanoid encoding. The input rig, non-leg groups and explicit Avatar calibrations are preserved.
+- `HumanoidSolver(rig, activeHumanBones, rangePolicy, canonicalCurveTwists: true)`: constrain arm axial twists to a principal chart when fitting animation curves. The existing constructor retains its decoding ranges. `FitArmGeometry` controls arm geometry fitting independently from `FitLegGeometry`.
 - `FkBranchContinuation.Process`: whole-sequence equivalent arm branches; preserves source/target arrays. `FkRollContinuation` provides the separate streaming forearm policy.
 - `HumanoidBodyMassCalibration.Fit`, `RootCalibration.Fit`: root mass calibration. Use independent reference data for acceptance before applying fitted weights.
 - `SkeletonPose`, `TwoBoneIk`, `AvatarDescriptorIO`, `HpsJson`: pose math, IK, FBX descriptors and serialization.
 
-Batch solving shares immutable calibration/model data while frame state remains local. Root fitting uses the final muscle pose. Calibration coverage and target skeleton differences determine accuracy; portable FBX import and native Avatar calibration are distinct input types.
+Batch solving shares immutable calibration/model data. Ordered arm projection keeps history per motion; frame fitting remains parallel. Root fitting uses the final muscle pose. Calibration coverage and target skeleton differences determine accuracy; portable FBX import and native Avatar calibration are distinct input types.
 
 ## Native Unity calibration
 

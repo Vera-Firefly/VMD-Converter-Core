@@ -87,6 +87,29 @@ public static class OfflineRigFactory
         return result;
     }
 
+    /// <summary>
+    /// Create a portable leg encoding rig with analytic swing and distributed twist.
+    /// Only groups matching that response at every calibration node are replaced.
+    /// The input rig and explicitly calibrated responses are retained unchanged.
+    /// </summary>
+    public static Rig ForHumanoidLegEncoding(Rig poseRig)
+    {
+        if(poseRig.precision!="offline-default-profile")return poseRig;
+        var groups=poseRig.groups.Select(g=>poseRig.muscles[g.muscles[0]].humanBone is >=1 and <=6
+            ?new MuscleGroup{muscles=g.muscles,bones=g.bones,resolution=g.resolution,muscleRanges=g.muscleRanges,
+                shoulderSwingAxes=g.shoulderSwingAxes,armResponseAxes=g.armResponseAxes,armResponseRadians=g.armResponseRadians,
+                samples=g.samples.Select(s=>new LatticeSample{muscles=s.muscles,positions=s.positions,
+                    rotations=(float[])s.rotations.Clone()}).ToArray()}:g).ToArray();
+        var result=new Rig{version=poseRig.version,source=poseRig.source,humanScale=poseRig.humanScale,hips=poseRig.hips,
+            bones=poseRig.bones,bindBones=poseRig.bindBones,morphs=poseRig.morphs,precision=poseRig.precision,
+            muscles=poseRig.muscles,groups=groups,bodyPosition=poseRig.bodyPosition,bodyRotation=poseRig.bodyRotation,
+            bodyPositionJacobian=poseRig.bodyPositionJacobian,bodyPositionWeights=poseRig.bodyPositionWeights,
+            bodyOrientationMode=poseRig.bodyOrientationMode,reverseCompositionBones=poseRig.reverseCompositionBones};
+        ArmResponse.Configure(result,legs:true);
+        HumanoidSolver.Validate(result);
+        return result;
+    }
+
     private static Rig Transfer(FbxDocument document,Rig profile,HumanoidResponseTransport transport,bool anatomicalArms)
     {
         if (!Enum.IsDefined(transport)) throw new ArgumentOutOfRangeException(nameof(transport));

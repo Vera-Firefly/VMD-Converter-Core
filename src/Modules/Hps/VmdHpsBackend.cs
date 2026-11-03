@@ -24,6 +24,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
         readonly SkeletonPose bind,sourceBind;
         readonly HumanoidSolver solver,sourceSolver,decoder;
         readonly HumanoidUpperProjector sourceUpper,targetUpper;
+        readonly SourceLegEncoder? sourceLegEncoder;
         readonly Dictionary<int,int> source,target,sourceTarget;
         readonly (int target,int source)[] musclePairs;
         readonly int[] targetMappedAncestors;
@@ -49,6 +50,8 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
             if(sourceRig.bindBones.Length==0)sourceRig.bindBones=sourceRig.bones;
             sourceBind=new SkeletonPose(new Rig{bones=sourceRig.bindBones});
             canonical=options.FbxPath==null&&options.HpsRigPath==null&&options.DescriptorPath==null&&legacy==null;
+            bool sourceLegEncoding=options.OutputKind==VmdExternalOutputKind.HumanoidIk&&!canonical;
+            if(sourceLegEncoding)sourceRig=SourceLegEncoder.CreateRig(sourceRig,options.ProfilePath);
             if(canonical && region!=VmdTargetSolveRegion.Canonical)
                 throw new InvalidDataException("Target output requires --fbx, --hps-rig, --descriptor or an exported Unity target rig.");
             if(options.DescriptorPath!=null)
@@ -85,10 +88,12 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 region==VmdTargetSolveRegion.Leg&&!IsUpper(m.humanBone)).Select(m=>m.humanBone).ToHashSet();
             bool geometry=options.LegFit switch {"auto"=>true,"geometry"=>true,"rotation"=>false,_=>throw new ArgumentException("Unknown leg fitting policy")};
             encodingRig=canonical?rig:OfflineRigFactory.ForHumanoidEncoding(rig,options.ProfilePath);
+            if(sourceLegEncoding)encodingRig=OfflineRigFactory.ForHumanoidLegEncoding(encodingRig);
             solver=new HumanoidSolver(encodingRig,selected,policy){FitDecodedArmContext=true,FitLegGeometry=geometry,AnchorLimbTwistToInitial=true,ReconstructDecodedRoot=true};
             decoder=new HumanoidSolver(encodingRig,rangePolicy:policy);
-            sourceSolver=new HumanoidSolver(sourceRig,sourceRig.muscles.Where(m=>m.humanBone is <11 or >18).Select(m=>m.humanBone).ToHashSet(),policy)
+            sourceSolver=new HumanoidSolver(sourceRig,sourceRig.muscles.Where(m=>(m.humanBone is <11 or >18)&&!(sourceLegEncoding&&m.humanBone is >=1 and <=6)).Select(m=>m.humanBone).ToHashSet(),policy)
                 {ReconstructDecodedRoot=true};
+            if(sourceLegEncoding)sourceLegEncoder=new SourceLegEncoder(sourceRig,policy);
             sourceUpper=new HumanoidUpperProjector(sourceRig,RawSourceBind());
             targetUpper=new HumanoidUpperProjector(rig);
             var byName=sourceRig.muscles.Select((m,i)=>(m,i)).ToDictionary(x=>x.m.name,x=>x.i);
@@ -109,7 +114,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 outputKind=options.OutputKind,bakeMorphs=options.BakeMorphs,
                 humanoid=new VmdHumanoidCalibrationData{muscles=rig.muscles.Select(m=>new VmdMuscleCalibration{property=MuscleProperty(m.name)}).ToArray()},
                 morphs=legacy?.morphs??rig.morphs.Select(m=>new VmdTargetMorphBinding{name=m.name,path=m.path}).ToArray()};
-            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|source-retarget-upper-continuity-root-v5|"+(sourceForwardFix?"source-forward-v1|":"")+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
+            RigIdentity=SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rig,HpsJsonContext.Default.Rig)+"|source-retarget-upper-continuity-root-v5|"+(sourceForwardFix?"source-forward-clock-curves-v2|":"")+(sourceLegEncoding?"source-leg-direction-v2|":"")+VmdOutputModes.ToArgument(options.OutputKind)+"|"+options.RangePolicy+"|"+options.LegFit));
         }
 
         Rig RawSourceBind()
@@ -244,7 +249,7 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
                 }
                 var raw=Build(sourceRig,sourceBind,sourceTarget,true,1,false,false);rawSource[frame]=raw;
                 var sourceResult=sourceSolver.Solve(raw,options.Passes);
-                sourceBase[frame]=sourceResult.humanPose.muscles;
+                sourceBase[frame]=sourceLegEncoder?.Project(raw,sourceResult.humanPose.muscles,options.Passes)??sourceResult.humanPose.muscles;
                 directFrames[frame]=Build(rig,bind,target,canonical,targetScale,options.TargetLegIk??false,false);
             });
             var sourceProjected=(sourceForwardFix?sourceUpper.ProjectSourceBatch(rawSource,sourceBase,threads,scheduler,sourceSolver.RangePolicy):sourceUpper.ProjectBatch(rawSource,sourceBase,threads,scheduler,sourceSolver.RangePolicy));
@@ -318,10 +323,171 @@ public sealed class VmdHpsBackend : IVmdHumanoidBackend, IVmdDescriptorBackend
             });
             // Forward source projection already owns the arm branch; do not replace it in a second FK pass.
             if(VmdOutputModes.IsFk(options.OutputKind)&&options.FkContinuity&&!sourceForwardFix)fk=FkBranchContinuation.Process(rig,sourceRig,rawSource,fk);
+            if(options.DiagnosticsDirectory!=null)ConversionDiagnostics.Write(options.DiagnosticsDirectory,motion,rig,sourceRig,rawSource,directFrames,frames,fk,decoded,region.ToString(),VmdOutputModes.ToArgument(options.OutputKind));
+            if(sourceForwardFix&&!VmdOutputModes.IsFk(options.OutputKind)) (frames,fitted,fk)=RefineForwardCurves(frames,fitted,fk,threads,scheduler);
             var result=WriteCurves(frames,fitted,fk);
             if(options.BakeMorphs)VmdCurveUtility.AddMorphCurves(motion,AnimationRig,result);
-            if(options.DiagnosticsDirectory!=null)ConversionDiagnostics.Write(options.DiagnosticsDirectory,motion,rig,sourceRig,rawSource,directFrames,frames,fk,decoded,region.ToString(),VmdOutputModes.ToArgument(options.OutputKind));
             return result;
+        }
+
+        // Fit the forward Humanoid curve path without target IK goals or changes to unselected muscles.
+        (PoseFrame[],ResultBatch,PoseFrame[]) RefineForwardCurves(PoseFrame[] frames,ResultBatch fitted,PoseFrame[] fk,int threads,TaskScheduler? scheduler)
+        {
+            var encoder=new HumanoidSolver(encodingRig,Enumerable.Range(13,6).ToHashSet(),decoder.RangePolicy,true){FitArmGeometry=true,FitDecodedArmContext=true,AnchorLimbTwistToInitial=true,FitLegGeometry=false,ReconstructDecodedRoot=true};
+            PoseFrame Mix(PoseFrame a,PoseFrame b,float t,float time){
+                var rotations=new float[a.rotations.Length];var positions=new float[a.positions.Length];
+                for(int i=0;i<rig.bones.Length;i++){Q q=Q.Lerp(Math3.Q(a.rotations,i*4),Math3.Q(b.rotations,i*4),t);var v=Math3.A(q);Array.Copy(v,0,rotations,i*4,4);}
+                for(int i=0;i<positions.Length;i++)positions[i]=a.positions[i]+t*(b.positions[i]-a.positions[i]);
+                return new PoseFrame{time=time,rotations=rotations,positions=positions};
+            }
+            float[] Seed(int i,float t)=>fitted.frames[i].humanPose.muscles.Zip(fitted.frames[i+1].humanPose.muscles,(a,b)=>a+t*(b-a)).ToArray();
+            (V[] directions,Q[] hands,V[] points) Shape(PoseFrame goal,float[] values){
+                var actual=decoder.Decode(values);var directions=new List<V>();var hands=new List<Q>();var points=new List<V>();Q inverse=Q.Inverse(actual.WorldRotations[rig.hips]);V origin=actual.WorldPositions[rig.hips];
+                for(int side=0;side<2;side++){int a=target[13+side],b=target[15+side],c=target[17+side];directions.Add(V.Normalize(Math3.Rotate(inverse,actual.WorldPositions[b]-actual.WorldPositions[a])));directions.Add(V.Normalize(Math3.Rotate(inverse,actual.WorldPositions[c]-actual.WorldPositions[b])));foreach(int node in new[]{a,b,c}){hands.Add(Q.Normalize(inverse*actual.WorldRotations[node]));points.Add(Math3.Rotate(inverse,actual.WorldPositions[node]-origin));}}
+                return(directions.ToArray(),hands.ToArray(),points.ToArray());
+            }
+            (V[] directions,Q[] hands,V[] points) Expected(PoseFrame goal){
+                var actual=new SkeletonPose(rig,goal);var directions=new List<V>();var hands=new List<Q>();var points=new List<V>();Q inverse=Q.Inverse(actual.WorldRotations[rig.hips]);V origin=actual.WorldPositions[rig.hips];
+                for(int side=0;side<2;side++){int a=target[13+side],b=target[15+side],c=target[17+side];directions.Add(V.Normalize(Math3.Rotate(inverse,actual.WorldPositions[b]-actual.WorldPositions[a])));directions.Add(V.Normalize(Math3.Rotate(inverse,actual.WorldPositions[c]-actual.WorldPositions[b])));foreach(int node in new[]{a,b,c}){hands.Add(Q.Normalize(inverse*actual.WorldRotations[node]));points.Add(Math3.Rotate(inverse,actual.WorldPositions[node]-origin));}}
+                return(directions.ToArray(),hands.ToArray(),points.ToArray());
+            }
+            float ShapeError((V[] directions,Q[] hands,V[] points) a,(V[] directions,Q[] hands,V[] points) b){float error=0;for(int i=0;i<a.directions.Length;i++)error=Math.Max(error,MathF.Acos(Math.Clamp(V.Dot(a.directions[i],b.directions[i]),-1,1))*180/MathF.PI);for(int i=0;i<a.hands.Length;i++){if(i%3==2)error=Math.Max(error,Math3.Angle(a.hands[i],b.hands[i]));error=Math.Max(error,V.Distance(a.points[i],b.points[i])/Math.Max(.1f,rig.humanScale)*180/MathF.PI);}return error;}
+            float Error(PoseFrame goal,float[] values)=>ShapeError(Shape(goal,values),Expected(goal));
+            float[] CoupledFit(PoseFrame goal,float[] initial){
+                var expected=Expected(goal);var values=(float[])initial.Clone();
+                for(int side=0;side<2;side++){
+                    int shoulder=target[11+side];int[] slots=Enumerable.Range(0,rig.muscles.Length).Where(m=>new[]{13+side,15+side,17+side}.Contains(rig.muscles[m].humanBone)).ToArray();
+                    if(slots.Length!=7)throw new InvalidDataException("Curve arm parameter count differs");
+                    double[] Residual(float[] v){
+                        var pose=encoder.Decode(v);Q inverse=Q.Inverse(pose.WorldRotations[rig.hips]);V origin=pose.WorldPositions[rig.hips];var r=new List<double>();
+                        for(int k=0;k<3;k++){
+                            int node=target[13+side+2*k];Q q=Q.Normalize(inverse*pose.WorldRotations[node]);V log=Math3.Log(Q.Normalize(Q.Inverse(expected.hands[side*3+k])*q));float weight=k==2?1.5f:.02f;r.Add(log.X*weight);r.Add(log.Y*weight);r.Add(log.Z*weight);
+                            V delta=(Math3.Rotate(inverse,pose.WorldPositions[node]-origin)-expected.points[side*3+k])/Math.Max(.1f,rig.humanScale)*4;r.Add(delta.X);r.Add(delta.Y);r.Add(delta.Z);
+                        }
+                        var clav=Math3.Log(Q.Normalize(Q.Inverse(Math3.Q(goal.rotations,shoulder*4))*pose.LocalRotations[shoulder]));r.Add(clav.X*.03);r.Add(clav.Y*.03);r.Add(clav.Z*.03);
+                        foreach(int slot in slots)r.Add((v[slot]-initial[slot])*.001);return r.ToArray();
+                    }
+                    double Sum(double[] v)=>v.Sum(x=>x*x);var residual=Residual(values);double cost=Sum(residual),lambda=.001;
+                    for(int iteration=0;iteration<28;iteration++){
+                        var jacobian=new double[7][];
+                        for(int c=0;c<7;c++){
+                            var probe=(float[])values.Clone();probe[slots[c]]+=.001f;probe=encoder.CreateFitSeed(probe);double step=probe[slots[c]]-values[slots[c]];
+                            if(Math.Abs(step)<1e-7){probe[slots[c]]-=.001f;probe=encoder.CreateFitSeed(probe);step=probe[slots[c]]-values[slots[c]];}
+                            var r=Residual(probe);jacobian[c]=r.Select((v,i)=>Math.Abs(step)<1e-7?0:(v-residual[i])/step).ToArray();
+                        }
+                        var matrix=new double[7,8];for(int i=0;i<7;i++){for(int j=0;j<7;j++)for(int n=0;n<residual.Length;n++)matrix[i,j]+=jacobian[i][n]*jacobian[j][n];for(int n=0;n<residual.Length;n++)matrix[i,7]-=jacobian[i][n]*residual[n];matrix[i,i]+=lambda*Math.Max(1,matrix[i,i]);}
+                        for(int i=0;i<7;i++){int pivot=i;for(int j=i+1;j<7;j++)if(Math.Abs(matrix[j,i])>Math.Abs(matrix[pivot,i]))pivot=j;if(pivot!=i)for(int k=i;k<8;k++)(matrix[i,k],matrix[pivot,k])=(matrix[pivot,k],matrix[i,k]);double d=matrix[i,i];for(int k=i;k<8;k++)matrix[i,k]/=d;for(int j=0;j<7;j++)if(j!=i){d=matrix[j,i];for(int k=i;k<8;k++)matrix[j,k]-=d*matrix[i,k];}}
+                        var next=(float[])values.Clone();for(int i=0;i<7;i++)next[slots[i]]+=(float)Math.Clamp(matrix[i,7],-.2,.2);next=encoder.CreateFitSeed(next);var candidate=Residual(next);double nextCost=Sum(candidate);
+                        if(nextCost<cost){double gain=cost-nextCost;values=next;residual=candidate;cost=nextCost;lambda=Math.Max(1e-8,lambda/3);if(gain<1e-9)break;}else{lambda*=5;if(lambda>1e8)break;}
+                    }
+                }
+                return values;
+            }
+
+            (float angle,float increment) PathScore(int index,List<(PoseFrame frame,SolveResult result)> inserted){
+                var poses=new List<SolveResult>{fitted.frames[index]};poses.AddRange(inserted.Select(e=>e.result));poses.Add(fitted.frames[index+1]);
+                var keys=poses.Select(p=>p.time).ToArray();var channels=new float[rig.muscles.Length][];
+                for(int m=0;m<channels.Length;m++){channels[m]=poses.Select(p=>p.humanPose.muscles[m]).ToArray();UnwrapUpperAngle(channels[m],rig.muscles[m]);}
+                float angle=0,increment=0;(V[] directions,Q[] hands,V[] points)? previous=null,previousGoal=null;
+                for(int k=0;k<=16;k++){
+                    float t=k/16f,time=frames[index].time+t*(frames[index+1].time-frames[index].time);int right=Array.FindIndex(keys,v=>v>=time);if(right<0)right=keys.Length-1;int left=Math.Max(0,right-1);float f=right==left?0:(time-keys[left])/(keys[right]-keys[left]);var values=new float[channels.Length];
+                    for(int m=0;m<values.Length;m++){
+                        float value=channels[m][left]+f*(channels[m][right]-channels[m][left]);
+                        if(rig.muscles[m].humanBone is >=11 and <=18 && rig.muscles[m].dof!=0){var muscle=rig.muscles[m];float degrees=value*(value<0?-muscle.minimum:muscle.maximum);degrees-=360*MathF.Floor((degrees+180)/360);value=degrees/(degrees<0?-muscle.minimum:muscle.maximum);}values[m]=value;
+                    }
+                    var goal=Mix(fk[index],fk[index+1],t,time);var q=Shape(goal,values);var expected=Expected(goal);angle=Math.Max(angle,ShapeError(q,expected));
+                    if(previous!=null){for(int b=0;b<q.hands.Length;b++)if(b%3==2)increment=Math.Max(increment,Math3.Angle(q.hands[b]*Q.Inverse(previous.Value.hands[b]),expected.hands[b]*Q.Inverse(previousGoal!.Value.hands[b])));for(int b=0;b<q.directions.Length;b++)increment=Math.Max(increment,((q.directions[b]-previous.Value.directions[b])-(expected.directions[b]-previousGoal!.Value.directions[b])).Length()*180/MathF.PI);}
+                    previous=q;previousGoal=expected;
+                }
+                return(angle,increment);
+            }
+            int refined=0,rejected=0,pathRejected=0;
+            (PoseFrame frame,SolveResult result) FitPoint(int i,float t,float[]? continuation){
+                        var goal=Mix(fk[i],fk[i+1],t,frames[i].time+t*(frames[i+1].time-frames[i].time));var seed=encoder.CreateFitSeed(Seed(i,t));float initial=Error(goal,seed);
+                        var coupled=CoupledFit(goal,seed);var solved=new SolveResult{time=goal.time,humanPose=encoder.ReconstructRoot(goal,coupled)};float error=Error(goal,coupled);
+                        if(error>.5f){
+                            var neutral=(float[])seed.Clone();for(int m=0;m<neutral.Length;m++)if(rig.muscles[m].humanBone is >=13 and <=18)neutral[m]=0;
+                            var projected=targetUpper.Project(goal,neutral);
+                            var starts=new[]{neutral,projected,fitted.frames[i].humanPose.muscles,fitted.frames[i+1].humanPose.muscles};
+                            foreach(var start in starts){
+                                var alternative=(float[])seed.Clone();for(int m=0;m<alternative.Length;m++)if(rig.muscles[m].humanBone is >=13 and <=18)alternative[m]=start[m];
+                                alternative=CoupledFit(goal,encoder.CreateFitSeed(alternative));float e=Error(goal,alternative);
+                                if(e<error){error=e;solved=new SolveResult{time=goal.time,humanPose=encoder.ReconstructRoot(goal,alternative)};}
+                            }
+                        }
+                        if(error>initial+.001f){solved=new SolveResult{time=goal.time,humanPose=encoder.ReconstructRoot(goal,seed)};Interlocked.Increment(ref rejected);}
+                        for(int m=0;m<rig.muscles.Length;m++)if(rig.muscles[m].humanBone is not (>=11 and <=18)&&solved.humanPose.muscles[m]!=seed[m])throw new InvalidDataException("Curve encoder modified unselected muscles");
+                        if(continuation!=null){var warm=(float[])seed.Clone();for(int m=0;m<warm.Length;m++)if(rig.muscles[m].humanBone is >=11 and <=18)warm[m]=continuation[m];warm=CoupledFit(goal,encoder.CreateFitSeed(warm));float warmError=Error(goal,warm);if(warmError<error){solved=new SolveResult{time=goal.time,humanPose=encoder.ReconstructRoot(goal,warm)};}}
+                        return(goal,solved);
+            }
+            List<(PoseFrame frame,SolveResult result)> FitTrajectory(int index){
+                const int divisions=4,samples=16;var knots=new float[divisions+1][];knots[0]=fitted.frames[index].humanPose.muscles;knots[^1]=fitted.frames[index+1].humanPose.muscles;
+                for(int k=1;k<divisions;k++)knots[k]=encoder.CreateFitSeed(Seed(index,k/(float)divisions));
+                var goals=Enumerable.Range(0,samples+1).Select(k=>Mix(fk[index],fk[index+1],k/(float)samples,frames[index].time+k/(float)samples*(frames[index+1].time-frames[index].time))).ToArray();var desired=goals.Select(Expected).ToArray();
+                for(int side=0;side<2;side++){
+                    int[] slots=Enumerable.Range(0,rig.muscles.Length).Where(m=>new[]{13+side,15+side,17+side}.Contains(rig.muscles[m].humanBone)).ToArray();int n=slots.Length*(divisions-1);if(n!=21)throw new InvalidDataException("Curve trajectory dimension differs");
+                    var initial=knots.Select(k=>(float[])k.Clone()).ToArray();
+                    double[] Residual(float[][] values){
+                        var channels=new float[slots.Length][];for(int c=0;c<slots.Length;c++){channels[c]=values.Select(v=>v[slots[c]]).ToArray();UnwrapUpperAngle(channels[c],rig.muscles[slots[c]]);}
+                        var actual=new (V[] directions,Q[] hands,V[] points)[samples+1];
+                        for(int k=0;k<=samples;k++){
+                            float t=k/(float)samples;int a=Math.Min(divisions-1,k*divisions/samples),b=a+1;float f=t*divisions-a;var v=Seed(index,t);
+                            for(int c=0;c<slots.Length;c++){
+                                int slot=slots[c];float x=channels[c][a]+f*(channels[c][b]-channels[c][a]);var muscle=rig.muscles[slot];
+                                if(muscle.dof!=0){float angle=x*(x<0?-muscle.minimum:muscle.maximum);angle-=360*MathF.Floor((angle+180)/360);x=angle/(angle<0?-muscle.minimum:muscle.maximum);}v[slot]=x;
+                            }
+                            actual[k]=Shape(goals[k],v);
+                        }
+                        var r=new List<double>();double velocity=2*(1d/30)/(frames[index+1].time-frames[index].time);
+                        void Put(V v,double weight){r.Add(v.X*weight);r.Add(v.Y*weight);r.Add(v.Z*weight);}
+                        for(int k=0;k<=samples;k++)for(int node=0;node<3;node++){
+                            int slot=side*3+node;double weight=node==2?1.5:.02;
+                            if(k>0&&k<samples){Put(Math3.Log(Q.Normalize(Q.Inverse(desired[k].hands[slot])*actual[k].hands[slot])),weight);Put((actual[k].points[slot]-desired[k].points[slot])/Math.Max(.1f,rig.humanScale),4);}
+                            if(k>0){Q a=Q.Normalize(actual[k].hands[slot]*Q.Inverse(actual[k-1].hands[slot])),b=Q.Normalize(desired[k].hands[slot]*Q.Inverse(desired[k-1].hands[slot]));Put(Math3.Log(Q.Normalize(Q.Inverse(b)*a)),velocity*weight);Put(((actual[k].points[slot]-actual[k-1].points[slot])-(desired[k].points[slot]-desired[k-1].points[slot]))/Math.Max(.1f,rig.humanScale),velocity*4);}
+                        }
+                        for(int k=1;k<divisions;k++)foreach(int slot in slots)r.Add((values[k][slot]-initial[k][slot])*.001);return r.ToArray();
+                    }
+                    double Sum(double[] v)=>v.Sum(x=>x*x);var residual=Residual(knots);double cost=Sum(residual),lambda=.001;
+                    for(int iteration=0;iteration<24;iteration++){
+                        var jacobian=new double[n][];
+                        for(int c=0;c<n;c++){
+                            int k=c/slots.Length+1,slot=slots[c%slots.Length];var probe=knots.Select(v=>(float[])v.Clone()).ToArray();probe[k][slot]+=.001f;probe[k]=encoder.CreateFitSeed(probe[k]);double step=probe[k][slot]-knots[k][slot];
+                            if(Math.Abs(step)<1e-7){probe[k][slot]-=.001f;probe[k]=encoder.CreateFitSeed(probe[k]);step=probe[k][slot]-knots[k][slot];}
+                            var value=Residual(probe);jacobian[c]=value.Select((x,i)=>Math.Abs(step)<1e-7?0:(x-residual[i])/step).ToArray();
+                        }
+                        var matrix=new double[n,n+1];for(int i=0;i<n;i++){for(int j=0;j<n;j++)for(int k=0;k<residual.Length;k++)matrix[i,j]+=jacobian[i][k]*jacobian[j][k];for(int k=0;k<residual.Length;k++)matrix[i,n]-=jacobian[i][k]*residual[k];matrix[i,i]+=lambda*Math.Max(1,matrix[i,i]);}
+                        for(int i=0;i<n;i++){int pivot=i;for(int j=i+1;j<n;j++)if(Math.Abs(matrix[j,i])>Math.Abs(matrix[pivot,i]))pivot=j;if(pivot!=i)for(int k=i;k<=n;k++)(matrix[i,k],matrix[pivot,k])=(matrix[pivot,k],matrix[i,k]);double d=matrix[i,i];for(int k=i;k<=n;k++)matrix[i,k]/=d;for(int j=0;j<n;j++)if(j!=i){d=matrix[j,i];for(int k=i;k<=n;k++)matrix[j,k]-=d*matrix[i,k];}}
+                        var next=knots.Select(v=>(float[])v.Clone()).ToArray();for(int c=0;c<n;c++)next[c/slots.Length+1][slots[c%slots.Length]]+=(float)Math.Clamp(matrix[c,n],-.2,.2);for(int k=1;k<divisions;k++)next[k]=encoder.CreateFitSeed(next[k]);var candidate=Residual(next);double nextCost=Sum(candidate);
+                        if(nextCost<cost){double gain=cost-nextCost;knots=next;residual=candidate;cost=nextCost;lambda=Math.Max(1e-8,lambda/3);if(gain<1e-8)break;}else{lambda*=5;if(lambda>1e8)break;}
+                    }
+                }
+                var result=new List<(PoseFrame,SolveResult)>();for(int k=1;k<divisions;k++){var goal=goals[k*samples/divisions];result.Add((goal,new SolveResult{time=goal.time,humanPose=encoder.ReconstructRoot(goal,knots[k])}));}return result;
+            }
+            var segments=new List<(PoseFrame frame,SolveResult result)>[Math.Max(0,frames.Length-1)];
+            Parallel.For(0,segments.Length,new ParallelOptions{MaxDegreeOfParallelism=threads,TaskScheduler=scheduler??TaskScheduler.Default},i=>{
+                var entries=new List<(PoseFrame,SolveResult)>();bool needs=false;
+                for(int k=1;k<4;k++){float t=k/4f;var goal=Mix(fk[i],fk[i+1],t,frames[i].time+t*(frames[i+1].time-frames[i].time));if(Error(goal,Seed(i,t))>.1f){needs=true;break;}}
+                if(needs){
+                    for(int k=1;k<4;k++)entries.Add(FitPoint(i,k/4f,null));
+                    try{
+                        var oldPath=PathScore(i,new List<(PoseFrame,SolveResult)>());var newPath=PathScore(i,entries);
+                        if(newPath.angle>oldPath.angle+.05f||newPath.increment>oldPath.increment+.05f){
+                            var denser=new List<(PoseFrame frame,SolveResult result)>();float[] previous=fitted.frames[i].humanPose.muscles;
+                            for(int k=1;k<8;k++){var point=FitPoint(i,k/8f,previous);denser.Add(point);previous=point.result.humanPose.muscles;}
+                            var densePath=PathScore(i,denser);
+                            if(densePath.angle<=oldPath.angle+.05f&&densePath.increment<=oldPath.increment+.05f){entries=denser;Interlocked.Increment(ref refined);}else{
+                                var trajectory=FitTrajectory(i);var trajectoryPath=PathScore(i,trajectory);
+                                if(trajectoryPath.angle<=oldPath.angle+.05f&&trajectoryPath.increment<=oldPath.increment+.05f){entries=trajectory;Interlocked.Increment(ref refined);}else{entries.Clear();Interlocked.Increment(ref pathRejected);}
+                            }
+                        }else Interlocked.Increment(ref refined);
+                    }catch(InvalidDataException){entries.Clear();Interlocked.Increment(ref pathRejected);}
+                }
+                segments[i]=entries;
+            });
+            var outputFrames=new List<PoseFrame>();var outputResults=new List<SolveResult>();var outputFk=new List<PoseFrame>();
+            for(int i=0;i<frames.Length;i++){outputFrames.Add(frames[i]);outputResults.Add(fitted.frames[i]);outputFk.Add(fk[i]);if(i<segments.Length)foreach(var entry in segments[i]){outputFrames.Add(entry.frame);outputResults.Add(entry.result);outputFk.Add(entry.frame);}}
+            Console.Error.WriteLine($"Forward pose curve encoding: intervals={refined}; added={outputFrames.Count-frames.Length}; fit fallback={rejected}; path rejected={pathRejected}; PMX samples unchanged={frames.Length}");
+            return(outputFrames.ToArray(),new ResultBatch{frames=outputResults.ToArray()},outputFk.ToArray());
         }
 
         VmdTargetCurveData WriteCurves(PoseFrame[] goals,ResultBatch fitted,PoseFrame[] fk)

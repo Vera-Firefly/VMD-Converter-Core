@@ -6,11 +6,14 @@ sealed class UpperModel { public int Version { get; set; } public Rig ReferenceR
 // Calibrated upper-limb response model used by HumanoidUpperProjector.
 sealed class UpperProjection
 {
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UpperModel,Lazy<SourceSphereIndex[]>> indexes=new();
+    readonly SourceSphereIndex[]? sphere;
+    readonly bool separateBranches;
     readonly UpperModel model; readonly Dictionary<int, int> bones; readonly Dictionary<int, Joint> joints; readonly Dictionary<int, Q> pre, post;
-    public UpperProjection(UpperModel value)
+    public UpperProjection(UpperModel value,bool indexed=false,bool separateBranches=false)
     {
         if (value.Version != 1 || value.Neighbors < 6 || value.Points.Length != 2 || value.Points.Any(p => p.Length <= value.Neighbors || p.Any(r => r.Length != 12 || r.Any(x => !double.IsFinite(x))))) throw new ArgumentException("Invalid model");
-        model = value; bones = value.ReferenceRig.bones.Select((b, i) => (b, i)).Where(x => x.b.humanBone >= 0).ToDictionary(x => x.b.humanBone, x => x.i);
+        this.separateBranches=separateBranches;model=value;if(indexed)sphere=indexes.GetValue(value,m=>new Lazy<SourceSphereIndex[]>(()=>m.Points.Select(p=>new SourceSphereIndex(p)).ToArray())).Value; bones = value.ReferenceRig.bones.Select((b, i) => (b, i)).Where(x => x.b.humanBone >= 0).ToDictionary(x => x.b.humanBone, x => x.i);
         joints = value.Joints.ToDictionary(x => x.HumanBone); pre = value.Joints.ToDictionary(x => x.HumanBone, x => Q.Read(x.Pre)); post = value.Joints.ToDictionary(x => x.HumanBone, x => Q.Read(x.Post));
         foreach (int h in Enumerable.Range(11, 8)) if (!bones.ContainsKey(h) || !joints.ContainsKey(h)) throw new ArgumentException("Missing joint");
     }
@@ -47,9 +50,19 @@ sealed class UpperProjection
     (double, double, double, Q, Q) Query(Q folded, int side)
     {
         int h = 15 + side; Q human = Frame(folded.Normalized, h), twist = human.Twist; double phase = 2 * Math.Atan2(twist.X, twist.W) * joints[h].LimitSign[0];
-        Q axis = human * new Q(1, 0, 0, 0) * human.Inverse; double[] p = [axis.X, axis.Y, axis.Z]; var nearest = new PriorityQueue<(int Index, double Distance), double>(); var points = model.Points[side];
+        Q axis = human * new Q(1, 0, 0, 0) * human.Inverse; double[] p = [axis.X, axis.Y, axis.Z]; var points=model.Points[side];(int Index,double Distance)[] selected;
+        if(sphere!=null)selected=sphere[side].Nearest(p,model.Neighbors).Select(row=>(row.Index,row.Distance)).ToArray();
+        else{var nearest = new PriorityQueue<(int Index, double Distance), double>();
         for (int i = 0; i < points.Length; i++) { var row = points[i]; double d = Math.Max(0, 1 - row[0] * p[0] - row[1] * p[1] - row[2] * p[2]); if (nearest.Count < model.Neighbors) nearest.Enqueue((i, d), -d); else if (d < nearest.Peek().Distance) { nearest.Dequeue(); nearest.Enqueue((i, d), -d); } }
-        var selected = nearest.UnorderedItems.Select(x => x.Element).ToArray(); double bandwidth = Math.Max(selected.Max(x => x.Distance), 1e-12);
+        selected = nearest.UnorderedItems.Select(x => x.Element).ToArray();}
+        if(separateBranches&&sphere!=null){
+            var phaseAnchor=points[selected.MinBy(row=>row.Distance).Index];
+            bool Same(double[] row)=>phaseAnchor[3]*row[3]+phaseAnchor[4]*row[4]>0&&phaseAnchor[5]*row[5]+phaseAnchor[6]*row[6]>0;
+            if(selected.Any(row=>!Same(points[row.Index]))){
+                selected=sphere[side].Nearest(p,Math.Min(points.Length,model.Neighbors*4)).Where(row=>Same(points[row.Index])).OrderBy(row=>row.Distance).Take(model.Neighbors).Select(row=>(row.Index,row.Distance)).ToArray();
+            }
+        }
+        double bandwidth = Math.Max(selected.Max(x => x.Distance), 1e-12);
         var anchor = new double[3]; anchor[Enumerable.Range(0, 3).MinBy(i => Math.Abs(p[i]))] = 1; var a = Cross(p, anchor); double length = Math.Sqrt(a.Sum(x => x * x)); for (int i = 0; i < 3; i++) a[i] /= length; var b = Cross(p, a); var system = new double[6, 15];
         foreach (var row in selected) { var point = points[row.Index]; double x = 0, y = 0; for (int j = 0; j < 3; j++) { x += (point[j] - p[j]) * a[j]; y += (point[j] - p[j]) * b[j]; } double[] design = [1, x, y, x * x, x * y, y * y]; double w = Math.Exp(-row.Distance / bandwidth); for (int i = 0; i < 6; i++) { for (int j = 0; j < 6; j++) system[i, j] += w * design[i] * design[j]; for (int j = 0; j < 9; j++) system[i, j + 6] += w * design[i] * point[j + 3]; } }
         for (int i = 0; i < 6; i++) system[i, i] += i == 0 ? 1e-10 : 1e-8;

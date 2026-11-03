@@ -55,6 +55,7 @@ JSON 字段名称采用 camelCase。`Rig` 和数组结构的完整定义见 `src
 - `bones`：父索引、Humanoid 骨骼枚举、中立局部位置/旋转。`hips` 指向实际 Hips 的数组位置，不是固定索引。
 - `groups`：每个关节的 1–3 个肌肉通道、共同作用到的局部骨骼，以及响应格点。`muscleRanges` 给出每个通道的正负采样边界；缺省时各边界为 `±1`。默认 Strict 策略只接受格点覆盖的范围；显式 Tangent 策略在有界范围内延拓边界响应。
 - `samples`：第 0 维变化最快。`rotations/positions` 只包含该组 `bones` 数组中的骨骼；`muscles` 保存 Unity 的格点读回值，用于描述响应格点。
+- `groups[].armResponseAxes`、`armResponseRadians`：可选四肢解析响应，字段名保留以兼容已有 rig。按肌肉维度、组内骨骼顺序排列；前者每项为 xyz 单位轴，长度为 `dimensions * boneCount * 3`，后者为每个正向肌肉单位对应的弧度，长度为 `dimensions * boneCount`。零响应使用零轴和零弧度。响应以中心格点旋转为基准，用于同一四肢关节的 2–3 个通道，与 `shoulderSwingAxes` 互斥；缺省或空数组保留原格点规则。上肢由 `OfflineRigFactory.ForHumanoidEncoding` 生成，腿部由 `OfflineRigFactory.ForHumanoidLegEncoding` 生成；须使用支持相应响应的运行库读取。
 - `bodyPositionWeights`：校准后的身体位置投影权重；运行时对骨骼世界位置加权求和，再除以 `humanScale`。
 - `bodyPositionJacobian`：身体位置的平移响应矩阵，未配置位置权重时使用。
 - `bodyOrientationMode=landmarks`：使用腿根与上臂的身体框架估计身体方向。

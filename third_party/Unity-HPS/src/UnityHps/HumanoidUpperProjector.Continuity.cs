@@ -17,10 +17,12 @@ public sealed partial class HumanoidUpperProjector
         if(frames.Length!=initial.Length||initial.Any(v=>v.Length!=muscleCount||v.Any(x=>!float.IsFinite(x))))throw new InvalidDataException("Upper continuity inputs differ");
         for(int f=0;sourceMotion&&f<frames.Length;f++)if(!float.IsFinite(frames[f].time)||frames[f].time<0||f>0&&frames[f].time<=frames[f-1].time)
             throw new InvalidDataException("Upper continuity requires chronological frame times");
+        UpperProjection? sourceBaseline=null;double[][][]? sourceResidual=null;
+        if(sourceMotion){var data=SourceShared.Value;if(data.count!=count||!data.ranges.SequenceEqual(ranges))throw new InvalidDataException("Source response configuration differs");sourceBaseline=new UpperProjection(data.model,true,true);sourceResidual=data.residual;}
         var mapped=new double[frames.Length][];var projected=new double[frames.Length][];
         Parallel.For(0,frames.Length,new ParallelOptions{MaxDegreeOfParallelism=threads==0?Environment.ProcessorCount:threads,TaskScheduler=scheduler??TaskScheduler.Default},f=>{
             mapped[f]=adapter.Map(frames[f]);
-            if(!fitted)projected[f]=ProjectUpper(mapped[f]);
+            if(!fitted)projected[f]=ProjectUpper(mapped[f],sourceBaseline,sourceResidual);
             else projected[f]=Enumerable.Range(0,18).Select(c=>{
                 double value=initial[f][outputSlots[c]],angle=value*(value<0?-outputLimits[c].minimum:outputLimits[c].maximum);
                 var reference=model.ReferenceRig.muscles[c+37];return angle/(angle<0?-reference.minimum:reference.maximum);

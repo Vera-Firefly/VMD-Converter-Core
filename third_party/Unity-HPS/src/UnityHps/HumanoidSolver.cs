@@ -15,6 +15,7 @@ public sealed partial class HumanoidSolver
     public bool FitDecodedArmContext { get; init; }
     /// <summary>Fit leg joint directions and foot orientation instead of every local rotation. Opt in after validating the rig's forward responses.</summary>
     public bool FitLegGeometry { get; init; }
+    public bool FitArmGeometry { get; init; } = true;
     /// <summary>Use the initial limb twist as a soft prior while fitting joint geometry.</summary>
     public bool AnchorLimbTwistToInitial { get; init; }
     public HumanoidRangePolicy RangePolicy { get; }
@@ -30,7 +31,8 @@ public sealed partial class HumanoidSolver
     private readonly Dictionary<MuscleGroup, (Quaternion[] rotations, Vector3[] positions)> latticeCache = new();
     private readonly IReadOnlySet<int>? activeHumanBones;
     public HumanoidSolver(Rig rig, IReadOnlySet<int>? activeHumanBones = null,
-        HumanoidRangePolicy rangePolicy = HumanoidRangePolicy.Strict)
+        HumanoidRangePolicy rangePolicy = HumanoidRangePolicy.Strict):this(rig,activeHumanBones,rangePolicy,false) { }
+    public HumanoidSolver(Rig rig,IReadOnlySet<int>? activeHumanBones,HumanoidRangePolicy rangePolicy,bool canonicalCurveTwists)
     {
         Validate(rig);
         if (!Enum.IsDefined(rangePolicy)) throw new ArgumentOutOfRangeException(nameof(rangePolicy));
@@ -50,6 +52,7 @@ public sealed partial class HumanoidSolver
                 if(m.humanBone is 11 or 12 && m.dof is 1 or 2 && m.minimum<0 && m.maximum>0)
                     muscleLimits[i]=Math.Max(muscleLimits[i],180f/Math.Max(-m.minimum,m.maximum));
             }
+        if(canonicalCurveTwists)for(int i=0;i<rig.muscles.Length;i++)if(rig.muscles[i].unityIndex is 41 or 43 or 50 or 52){var m=rig.muscles[i];muscleLimits[i]=Math.Min(muscleLimits[i],179.999f/Math.Max(-m.minimum,m.maximum));}
         neutral = new SkeletonPose(rig);
         reverseComposition = Enumerable.Range(0, rig.bones.Length).Select(rig.reverseCompositionBones.Contains).ToArray();
         foreach (var group in rig.groups)
@@ -153,7 +156,7 @@ public sealed partial class HumanoidSolver
                 if(group.armResponseAxes.Length!=slots*3 || group.armResponseRadians.Length!=slots ||
                     group.shoulderSwingAxes.Length!=0 || n is <2 or >3 ||
                     group.muscles.Select(m=>rig.muscles[m].dof).Distinct().Count()!=n ||
-                    group.muscles.Any(m=>rig.muscles[m].humanBone is <13 or >18 ||
+                    group.muscles.Any(m=>(rig.muscles[m].humanBone is <1 or >6 && rig.muscles[m].humanBone is <13 or >18) ||
                         rig.muscles[m].humanBone!=rig.muscles[group.muscles[0]].humanBone ||
                         rig.muscles[m].dof is <0 or >2 || !float.IsFinite(rig.muscles[m].minimum) ||
                         !float.IsFinite(rig.muscles[m].maximum) || rig.muscles[m].minimum>=0 || rig.muscles[m].maximum<=0) ||
@@ -375,7 +378,7 @@ public sealed partial class HumanoidSolver
         int[] owners = block.Select(g => rig.muscles[g.muscles[0]].humanBone).Distinct().Order().ToArray();
         bool arm = owners.SequenceEqual(new[] { 13, 15, 17 }) || owners.SequenceEqual(new[] { 14, 16, 18 });
         bool leg = owners.SequenceEqual(new[] { 1, 3, 5 }) || owners.SequenceEqual(new[] { 2, 4, 6 });
-        FitGroup(desired, muscles, block, arm || FitLegGeometry && leg);
+        FitGroup(desired, muscles, block, FitArmGeometry && arm || FitLegGeometry && leg);
     }
 
     private void FitGroup(SkeletonPose desired, float[] muscles, MuscleGroup[] block, bool armGeometry = false)
@@ -585,7 +588,7 @@ public sealed partial class HumanoidSolver
             for (int d = 0; d < values.Length; d++)
             {
                 var muscle = rig.muscles[group.muscles[d]];
-                if (muscle.dof != 0 || muscle.humanBone is < 13 or > 16 ||
+                if (muscle.dof != 0 || (muscle.humanBone is < 1 or > 4 && muscle.humanBone is < 13 or > 16) ||
                     !float.IsFinite(muscle.maximum) || muscle.maximum <= 0 ||
                     Math.Abs(muscle.minimum + muscle.maximum) > 1e-4f) continue;
                 float period = 360f / muscle.maximum;

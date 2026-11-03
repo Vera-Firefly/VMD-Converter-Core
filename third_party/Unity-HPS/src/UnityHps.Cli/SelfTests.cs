@@ -153,6 +153,8 @@ internal static class SelfTests
         TorsoTransportTests.Run(Check);
         LegNeutralTransportTests.Run(Check);
         ShoulderSwingTests.Run(Check);
+        NativeArmEncodingTests.Run(Check);
+        NativeLegEncodingTests.Run(Check);
         UpperProjectionTests.Run(Check);
         RangePolicyTests.Run(Check);
         FkBranchTests.Run(Check);
